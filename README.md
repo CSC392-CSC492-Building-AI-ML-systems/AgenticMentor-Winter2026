@@ -1,27 +1,32 @@
+# AgenticMentor - AI Project Mentor
+
+An intelligent AI mentor system that helps users define software project requirements.
+
+## Project Structure
+
+```
 AgenticMentor-Winter2026/
 ├── src/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI application entry point
 │   ├── agent/               # Agent implementation
-│   │   ├── __init__.py
-│   │   └── requirements_agent.py
+│   │   └── __init__.py
 │   ├── api/                 # API routes
-│   │   ├── __init__.py
-│   │   └── routes.py
+│   │   └── __init__.py
 │   ├── core/                # Configuration and prompts
 │   │   ├── __init__.py
-│   │   ├── config.py
-│   │   └── prompts.py
+│   │   └── config.py
 │   └── models/              # Data models
-│       ├── __init__.py
-│       └── schemas.py
+│       └── __init__.py
 ├── pyproject.toml           # Project dependencies
 ├── .env.example             # Environment variables template
 ├── .gitignore
 └── README.md
+```
 
 ## Setup
 1. **Install Python 3.11+**
+
 2. **Clone the repository**
    ```bash
    cd /Applications/dev/AgenticMentor-Winter2026
@@ -31,14 +36,16 @@ AgenticMentor-Winter2026/
    python3 -m venv venv
    source venv/bin/activate
    ```
+
 4. **Install dependencies**
    ```bash
    pip install -e .
    ```
-5. **Configure environment**
+
+5. **Configure environment (optional for now)**
    ```bash
    cp .env.example .env
-   # Edit .env and add your ANTHROPIC_API_KEY
+   # Edit .env and add your ANTHROPIC_API_KEY when needed
    ```
 
 
