@@ -10,8 +10,12 @@ from src.models.schemas import (
     ChatRequest,
     ChatResponse,
     ProjectState,
+    RequirementsState,
+    ChatMessage,
+    MessageRole,
 )
 from src.core.config import settings
+from src.agent.requirements_agent import get_agent
 
 
 # In-memory storage (will be moved to separate module in Phase 3)
@@ -20,7 +24,9 @@ projects_store: dict[str, ProjectState] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup/shutdown."""
+    """Lifespan context manager for startup/shutdown.
+    
+    """
     print(f"Starting AgenticMentor API on {settings.api_host}:{settings.api_port}")
     yield
     print("Shutting down AgenticMentor API")
@@ -55,13 +61,21 @@ async def health_check():
 
 @app.post("/projects", response_model=ProjectResponse, status_code=201)
 async def create_project(project: ProjectCreate):
-    """Create a new project and return project_id."""
+    """Create a new project and return project_id.
+
+    """
     project_id = str(uuid.uuid4())
 
     project_state = ProjectState(
         project_id=project_id,
         name=project.name,
         description=project.description,
+        requirements=RequirementsState(),
+        decisions=[],
+        assumptions=[],
+        conversation_history=[],
+        created_at=datetime.now(),
+        last_updated=datetime.now(),
     )
 
     projects_store[project_id] = project_state
@@ -78,6 +92,9 @@ async def create_project(project: ProjectCreate):
 
 @app.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str):
+    """ Gets the project on the {project_id} if it exists
+    
+    """
     if project_id not in projects_store:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -95,22 +112,66 @@ async def get_project(project_id: str):
 
 @app.post("/projects/{project_id}/chat", response_model=ChatResponse)
 async def chat(project_id: str, request: ChatRequest):
+    """ Send a message and get a response
+    
+    """
     if project_id not in projects_store:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # TODO: Wire up to LangGraph agent in Phase 2
-    # For now, return a mock response
-
-    return ChatResponse(
-        message="Thank you! I'll start by understanding your project. What type of application or system are you looking to build?",
-        state={
-            "requirements": projects_store[project_id].requirements.model_dump(),
-        },
-        artifacts={
-            "decisions": projects_store[project_id].decisions,
-            "assumptions": projects_store[project_id].assumptions,
-        },
+    project_state = projects_store[project_id]
+    
+    # Add user message to conversation history
+    user_message = ChatMessage(
+        role=MessageRole.USER,
+        content=request.message,
+        timestamp=datetime.now()
     )
+    project_state.conversation_history.append(user_message)
+    
+    # Get the agent and process the message
+    agent = get_agent()
+    
+    try:
+        result = await agent.process_message(
+            user_message=request.message,
+            current_requirements=project_state.requirements,
+            conversation_history=project_state.conversation_history
+        )
+        
+        # Update project state with agent results
+        project_state.requirements = result["requirements"]
+        project_state.decisions.extend(result["decisions"])
+        project_state.assumptions.extend(result["assumptions"])
+        project_state.last_updated = datetime.now()
+        
+        # Add agent response to conversation history
+        assistant_message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=result["response"],
+            timestamp=datetime.now()
+        )
+        project_state.conversation_history.append(assistant_message)
+        
+        # Save updated state
+        projects_store[project_id] = project_state
+        
+        # Return ChatResponse
+        return ChatResponse(
+            message=result["response"],
+            state={
+                "requirements": result["requirements"].model_dump(),
+                "is_complete": result["is_complete"],
+                "progress": result["progress"]
+            },
+            artifacts={
+                "decisions": result["decisions"],
+                "assumptions": result["assumptions"]
+            }
+        )
+        
+    except Exception as e:
+        print(f"Error processing message: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing message: {str(e)}") from e
 
 
 @app.get("/projects/{project_id}/requirements")
