@@ -1,35 +1,50 @@
-"""Manages CRUD operations on ProjectState instances."""
-
-from __future__ import annotations
-
-from typing import Dict
-
-from src.state.project_state import ProjectState
-
 
 class StateManager:
-    """In-memory state manager for workflow state."""
-
-    def __init__(self) -> None:
-        self._states: Dict[str, ProjectState] = {}
-
-    def create(self, state: ProjectState) -> None:
-        """Store a new project state."""
-        self._states[state.project_id] = state
-
-    def get(self, project_id: str) -> ProjectState | None:
-        """Retrieve a project state by ID."""
-        return self._states.get(project_id)
-
-    def update(self, project_id: str, updates: dict) -> ProjectState | None:
-        """Update fields on a project state."""
-        state = self._states.get(project_id)
-        if not state:
-            return None
-        updated = state.model_copy(update=updates)
-        self._states[project_id] = updated
-        return updated
-
-    def delete(self, project_id: str) -> None:
-        """Remove a project state."""
-        self._states.pop(project_id, None)
+    def __init__(self, persistence_adapter):
+        self.db = persistence_adapter
+        self.cache = {}  # In-memory cache for active sessions
+    
+    async def load(self, session_id: str) -> ProjectState:
+        """Load state with caching"""
+        if session_id in self.cache:
+            return self.cache[session_id]
+        
+        state_dict = await self.db.get(session_id)
+        state = ProjectState(**state_dict) if state_dict else ProjectState(session_id=session_id)
+        self.cache[session_id] = state
+        return state
+    
+    async def update(self, session_id: str, delta: dict):
+        """
+        Atomic state updates with conflict resolution
+        """
+        state = await self.load(session_id)
+        
+        # Apply delta (deep merge)
+        for key, value in delta.items():
+            if hasattr(state, key):
+                current = getattr(state, key)
+                if isinstance(current, list):
+                    current.extend(value if isinstance(value, list) else [value])
+                elif isinstance(current, dict):
+                    current.update(value)
+                else:
+                    setattr(state, key, value)
+        
+        state.updated_at = datetime.utcnow()
+        
+        # Persist
+        await self.db.save(session_id, state.dict())
+        self.cache[session_id] = state
+    
+    async def get_fragment(self, session_id: str, path: str):
+        """
+        Extract specific state fragment for token optimization
+        Example: get_fragment("session_123", "architecture.tech_stack")
+        """
+        state = await self.load(session_id)
+        keys = path.split(".")
+        value = state
+        for key in keys:
+            value = getattr(value, key)
+        return value

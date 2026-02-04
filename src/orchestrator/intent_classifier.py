@@ -1,13 +1,28 @@
-"""Classifies user intent for routing in the orchestrator."""
 
-from __future__ import annotations
-
-
-class IntentClassifier:
-    """Lightweight intent classifier placeholder."""
-
-    def classify(self, user_input: str) -> str:
-        """Return a coarse intent label for the given input."""
-        if not user_input:
-            return "unknown"
-        return "general_request"
+INTENT_PATTERNS = {
+    "requirements_gathering": {
+        "keywords": ["need", "want", "goal", "problem", "user story"],
+        "phase_compatibility": ["initialization", "discovery"],
+        "triggers": ["clarify", "what if", "constraints"]
+    },
+    "architecture_design": {
+        "keywords": ["architecture", "tech stack", "database", "API"],
+        "phase_compatibility": ["requirements_complete"],
+        "triggers": ["diagram", "structure", "how does"]
+    },
+    "mockup_creation": {
+        "keywords": ["UI", "screen", "flow", "wireframe", "design"],
+        "phase_compatibility": ["requirements_complete"],
+        "triggers": ["looks like", "user journey"]
+    },
+    "execution_planning": {
+        "keywords": ["roadmap", "timeline", "milestone", "sprint"],
+        "phase_compatibility": ["architecture_complete"],
+        "triggers": ["how long", "when", "priority"]
+    },
+    "export": {
+        "keywords": ["export", "download", "document", "PDF"],
+        "phase_compatibility": ["*"],
+        "triggers": ["generate", "compile"]
+    }
+}
