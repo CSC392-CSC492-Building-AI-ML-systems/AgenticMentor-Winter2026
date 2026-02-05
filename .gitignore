@@ -53,3 +53,6 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+
+# Local project docs
+docs/changelog.md
