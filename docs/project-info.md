@@ -137,7 +137,7 @@ User Response
 
 ### Core Framework
 - **Orchestration:** LangGraph or custom state machine
-- **LLM Client:** Anthropic Claude API (for specialist agents)
+- **LLM Client:** LangChain adapters in `src/adapters/llm_clients.py` (Gemini, Claude, DeepSeek, OpenAI)
 - **State Models:** Pydantic (validation + serialization)
 
 ### Persistence

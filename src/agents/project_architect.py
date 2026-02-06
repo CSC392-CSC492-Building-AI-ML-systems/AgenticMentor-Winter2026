@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from src.agents.base_agent import BaseAgent
+from src.protocols.schemas import MermaidLLMResponse
 from src.protocols.review_protocol import ReviewResult
 from src.state.project_state import ArchitectureDefinition, ProjectState
 from src.tools.diagram_generator import DiagramGenerator
@@ -53,14 +54,28 @@ class ProjectArchitectAgent(BaseAgent):
 
         app_type = self._infer_app_type(requirements)
         participants = ["User", "Frontend", "API", "Database"]
-        system_diagram = await self.diagram_gen.generate_diagram(
-            type="c4_context",
-            context=f"{app_type}: {requirements_text}",
+        # Old deterministic tool generation path (kept for reference):
+        # system_diagram = await self.diagram_gen.generate_diagram(
+        #     type="c4_context",
+        #     context=f"{app_type}: {requirements_text}",
+        #     participants=participants,
+        # )
+        # erd = await self.diagram_gen.generate_diagram(
+        #     type="erd",
+        #     context=requirements_text,
+        # )
+
+        system_diagram = await self._generate_mermaid_with_llm(
+            diagram_kind="system",
+            requirements_text=requirements_text,
+            app_type=app_type,
             participants=participants,
         )
-        erd = await self.diagram_gen.generate_diagram(
-            type="erd",
-            context=requirements_text,
+        erd = await self._generate_mermaid_with_llm(
+            diagram_kind="erd",
+            requirements_text=requirements_text,
+            app_type=app_type,
+            participants=participants,
         )
 
         architecture = ArchitectureDefinition(
@@ -256,6 +271,94 @@ class ProjectArchitectAgent(BaseAgent):
             return {}
 
         return {key: str(parsed[key]) for key in required}
+
+    async def _generate_mermaid_with_llm(
+        self,
+        diagram_kind: str,
+        requirements_text: str,
+        app_type: str,
+        participants: List[str],
+    ) -> str:
+        fallback_type = "erd" if diagram_kind == "erd" else "c4_context"
+        
+        if self.llm_client is None:
+            fallback_diagram = await self.diagram_gen.generate_diagram(
+            type=fallback_type,
+            context=f"{app_type}: {requirements_text}" if diagram_kind != "erd" else requirements_text,
+            participants=participants if diagram_kind != "erd" else None,
+        )
+            return fallback_diagram
+
+        if diagram_kind == "erd":
+            prompt = (
+                "You are a software architect. Output strict JSON only with keys: "
+                'diagram_type and mermaid_code. diagram_type must be "erd". '
+                "mermaid_code must be raw Mermaid.js code that starts with erDiagram "
+                "and must not include markdown fences.\n\n"
+                f"Requirements: {requirements_text}"
+            )
+        else:
+            prompt = (
+                "You are a software architect. Output strict JSON only with keys: "
+                'diagram_type and mermaid_code. diagram_type must be "system". '
+                "mermaid_code must be raw Mermaid.js system-context code that starts with "
+                "flowchart or graph and must not include markdown fences.\n\n"
+                f"Application Type: {app_type}\n"
+                f"Participants: {', '.join(participants)}\n"
+                f"Requirements: {requirements_text}"
+            )
+
+        raw_response: Any = None
+        if hasattr(self.llm_client, "generate"):
+            raw_response = await self.llm_client.generate(prompt)
+        elif hasattr(self.llm_client, "ainvoke"):
+            raw_response = await self.llm_client.ainvoke(prompt)
+        else:
+            return fallback_diagram
+
+        text = raw_response if isinstance(raw_response, str) else str(raw_response)
+        mermaid = self._extract_mermaid_from_structured_response(
+            raw_text=text,
+            expected_diagram_kind=diagram_kind,
+        )
+        if self._is_valid_mermaid(mermaid):
+            return mermaid
+        return fallback_diagram
+
+    def _extract_mermaid_from_structured_response(
+        self, raw_text: str, expected_diagram_kind: str
+    ) -> str:
+        try:
+            parsed = MermaidLLMResponse.model_validate_json(raw_text)
+        except Exception:
+            return ""
+
+        if parsed.diagram_type != expected_diagram_kind:
+            return ""
+        return parsed.mermaid_code.strip()
+
+    # Old free-text extraction heuristic (replaced by structured JSON + pydantic validation):
+    # def _extract_mermaid_code(self, text: str) -> str:
+    #     stripped = (text or "").strip()
+    #     if not stripped:
+    #         return ""
+    #
+    #     if "```" in stripped:
+    #         blocks = stripped.split("```")
+    #         for block in blocks:
+    #             candidate = block.strip()
+    #             if candidate.startswith("mermaid"):
+    #                 candidate = candidate[len("mermaid") :].strip()
+    #             if candidate.startswith(
+    #                 ("flowchart", "graph", "sequenceDiagram", "erDiagram", "classDiagram")
+    #             ):
+    #                 return candidate
+    #
+    #     for token in ("flowchart", "graph", "sequenceDiagram", "erDiagram", "classDiagram"):
+    #         idx = stripped.find(token)
+    #         if idx != -1:
+    #             return stripped[idx:].strip()
+    #     return stripped
 
     def _infer_app_type(self, requirements: Dict[str, Any]) -> str:
         corpus = " ".join(
