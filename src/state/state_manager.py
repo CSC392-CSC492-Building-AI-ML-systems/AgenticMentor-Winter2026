@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from src.state.project_state import ProjectState
+from pydantic import BaseModel
 
 
 class StateManager:
@@ -79,6 +80,9 @@ class StateManager:
         setattr(state, key, self._merged_value(current, value))
 
     def _merged_value(self, current: Any, value: Any) -> Any:
+        if isinstance(current, BaseModel) and isinstance(value, dict):
+            # Preserve pydantic model types on updates.
+            return current.model_copy(update=value)
         if isinstance(current, list):
             merged = list(current)
             merged.extend(value if isinstance(value, list) else [value])
