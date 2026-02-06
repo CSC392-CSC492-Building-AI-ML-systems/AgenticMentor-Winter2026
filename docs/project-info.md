@@ -140,6 +140,27 @@ User Response
 - **LLM Client:** LangChain adapters in `src/adapters/llm_clients.py` (Gemini, Claude, DeepSeek, OpenAI)
 - **State Models:** Pydantic (validation + serialization)
 
+### LLM Initialization Pattern
+**Problem:** Agents need LLM clients, but mixing client initialization with orchestration logic creates tight coupling and makes testing difficult.
+
+**Solution:** Centralize LLM client creation in `src/config/` and inject clients into agents via the orchestrator.
+
+```
+src/
+├── config/
+│   ├── settings.py        # Env-based settings (Pydantic Settings)
+│   └── llm_config.py      # LLM client factory/registry
+├── orchestrator/
+│   └── master_agent.py    # Imports from config, injects into agents
+└── adapters/
+    └── llm_clients.py     # Client wrappers (already exists)
+```
+
+**Flow:**
+1. `llm_config.py` → Reads env vars, creates configured clients
+2. `master_agent.py` → Imports `get_llm_client()` from config
+3. Agent instantiation → Orchestrator passes `llm_client` to each agent's `__init__`
+
 ### Persistence
 - **Development:** SQLite with JSON columns
 - **Production:** PostgreSQL with JSONB for flexible schema evolution

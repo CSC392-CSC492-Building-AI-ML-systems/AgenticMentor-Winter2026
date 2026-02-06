@@ -261,6 +261,19 @@ class ProjectArchitectAgent(BaseAgent):
             return {}
 
         text = raw_response if isinstance(raw_response, str) else str(raw_response)
+        
+        # Try to extract JSON from markdown code blocks if present
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+        
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -270,7 +283,27 @@ class ProjectArchitectAgent(BaseAgent):
         if not isinstance(parsed, dict) or not required.issubset(parsed.keys()):
             return {}
 
-        return {key: str(parsed[key]) for key in required}
+        # Handle nested structures: extract string from nested dicts/lists
+        result = {}
+        for key in required:
+            value = parsed[key]
+            if isinstance(value, str):
+                result[key] = value
+            elif isinstance(value, dict):
+                # LLM might return {"technologies": [...], "justification": "..."}
+                if "technologies" in value and isinstance(value["technologies"], list) and value["technologies"]:
+                    result[key] = str(value["technologies"][0])
+                elif "name" in value:
+                    result[key] = str(value["name"])
+                else:
+                    # Take first string value found
+                    result[key] = str(list(value.values())[0]) if value else "Unknown"
+            elif isinstance(value, list) and value:
+                result[key] = str(value[0])
+            else:
+                result[key] = str(value)
+
+        return result
 
     async def _generate_mermaid_with_llm(
         self,
@@ -280,13 +313,13 @@ class ProjectArchitectAgent(BaseAgent):
         participants: List[str],
     ) -> str:
         fallback_type = "erd" if diagram_kind == "erd" else "c4_context"
-        
-        if self.llm_client is None:
-            fallback_diagram = await self.diagram_gen.generate_diagram(
+        fallback_diagram = await self.diagram_gen.generate_diagram(
             type=fallback_type,
             context=f"{app_type}: {requirements_text}" if diagram_kind != "erd" else requirements_text,
             participants=participants if diagram_kind != "erd" else None,
         )
+        if self.llm_client is None:
+            
             return fallback_diagram
 
         if diagram_kind == "erd":
@@ -317,10 +350,12 @@ class ProjectArchitectAgent(BaseAgent):
             return fallback_diagram
 
         text = raw_response if isinstance(raw_response, str) else str(raw_response)
+        
         mermaid = self._extract_mermaid_from_structured_response(
             raw_text=text,
             expected_diagram_kind=diagram_kind,
-        )
+)
+        
         if self._is_valid_mermaid(mermaid):
             return mermaid
         return fallback_diagram
@@ -328,8 +363,22 @@ class ProjectArchitectAgent(BaseAgent):
     def _extract_mermaid_from_structured_response(
         self, raw_text: str, expected_diagram_kind: str
     ) -> str:
+        text = raw_text.strip()
+        
+        # Extract JSON from markdown code blocks if present
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+        
         try:
-            parsed = MermaidLLMResponse.model_validate_json(raw_text)
+            parsed = MermaidLLMResponse.model_validate_json(text)
         except Exception:
             return ""
 
