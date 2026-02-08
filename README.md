@@ -137,7 +137,7 @@ Response will include a `project_id` (e.g., `2799abcf-082b-4020-a5a6-79e35f30f3e
 ### 3. Start Conversation with Requirements Collector
 
 ```bash
-curl -X POST http://localhost:8000/projects/521c736a-4cba-4104-b17e-d56d7c39bbf3/chat \
+curl -X POST http://localhost:8000/projects/7c997f49-d3d6-4c5e-9680-991d55a0322b/chat \
   -H "Content-Type: application/json" \
   -d '{
     "message": "I want to build a todo app"

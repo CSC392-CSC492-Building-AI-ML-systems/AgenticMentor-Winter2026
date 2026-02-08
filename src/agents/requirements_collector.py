@@ -1,10 +1,11 @@
-from typing import TypedDict, Annotated, Sequence
+from typing import TypedDict, Annotated, Sequence, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 import json
 import operator
 
+from src.agents.base_agent import BaseAgent
 from src.utils.config import settings
 from src.utils.prompt import (
     SYSTEM_PROMPT,
@@ -25,20 +26,25 @@ class AgentState(TypedDict):
     next_question: str
 
 
-class RequirementsAgent:
-    """Requirements Collector Agent using LangGraph."""
+class RequirementsAgent(BaseAgent):
+    """Requirements Collector Agent using LangGraph, inheriting from BaseAgent."""
     
-    def __init__(self):
+    def __init__(self, review_config: Optional[dict] = None):
         """Initialize the agent with LLM and compile the graph."""
-        print("Initializing Requirements Agent...")
-        
-        self.llm = ChatGoogleGenerativeAI(
+        llm_client = ChatGoogleGenerativeAI(
             model=settings.model_name,
             temperature=settings.model_temperature,
             max_tokens=settings.model_max_tokens,
             google_api_key=settings.gemini_api_key,
         )
         
+        super().__init__(
+            name="RequirementsCollector",
+            llm_client=llm_client,
+            review_config=review_config
+        )
+        
+        print("Initializing Requirements Agent...")
         self.graph = self._build_graph()
         print("Agent ready")
     
@@ -69,6 +75,53 @@ class RequirementsAgent:
         
         print("Graph built successfully")
         return workflow.compile()
+    
+    async def _generate(self, input: Any, context: dict, tools: list) -> Any:
+        """
+        BaseAgent abstract method implementation.
+        Executes the LangGraph workflow for requirements collection.
+        """
+        user_message = input.get("message", "") if isinstance(input, dict) else str(input)
+        current_requirements = context.get("requirements", RequirementsState())
+        conversation_history = context.get("conversation_history", [])
+        
+        messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        
+        for msg in conversation_history[-10:]:
+            if msg.role == MessageRole.USER:
+                messages.append(HumanMessage(content=msg.content))
+            elif msg.role == MessageRole.ASSISTANT:
+                messages.append(AIMessage(content=msg.content))
+        
+        messages.append(HumanMessage(content=user_message))
+        
+        initial_state = {
+            "messages": messages,
+            "requirements": current_requirements,
+            "decisions": [],
+            "assumptions": [],
+            "next_question": ""
+        }
+        
+        final_state = await self.graph.ainvoke(initial_state)
+        
+        return {
+            "response": final_state["next_question"],
+            "requirements": final_state["requirements"],
+            "is_complete": final_state["requirements"].is_complete,
+            "progress": final_state["requirements"].progress,
+            "decisions": final_state["decisions"],
+            "assumptions": final_state["assumptions"]
+        }
+    
+    def _get_quality_criteria(self) -> dict:
+        """Return weighted review criteria for requirements collection."""
+        return {
+            "completeness": 0.3,
+            "clarity": 0.25,
+            "relevance": 0.25,
+            "specificity": 0.2
+        }
     
     async def _analyze_node(self, state: AgentState) -> AgentState:
         """Node 1: Analyze current state and conversation history."""
@@ -247,41 +300,25 @@ Return ONLY the question text, nothing else."""
         current_requirements: RequirementsState,
         conversation_history: list[ChatMessage]
     ) -> dict:
-        """Process a user message and return the agent's response."""
+        """
+        Process a user message and return the agent's response.
+        This method maintains backward compatibility with existing code.
+        """
         print(f"Processing message: '{user_message[:50]}...'")
         
-        messages = [SystemMessage(content=SYSTEM_PROMPT)]
-        
-        for msg in conversation_history[-10:]:
-            if msg.role == MessageRole.USER:
-                messages.append(HumanMessage(content=msg.content))
-            elif msg.role == MessageRole.ASSISTANT:
-                messages.append(AIMessage(content=msg.content))
-        
-        messages.append(HumanMessage(content=user_message))
-        
-        initial_state = {
-            "messages": messages,
+        context = {
             "requirements": current_requirements,
-            "decisions": [],
-            "assumptions": [],
-            "next_question": ""
+            "conversation_history": conversation_history
         }
         
+        input_data = {"message": user_message}
+        
         try:
-            final_state = await self.graph.ainvoke(initial_state)
+            result = await self._generate(input_data, context, [])
+            return result
         except Exception as e:
             print(f"Error in graph execution: {e}")
             raise
-        
-        return {
-            "response": final_state["next_question"],
-            "requirements": final_state["requirements"],
-            "is_complete": final_state["requirements"].is_complete,
-            "progress": final_state["requirements"].progress,
-            "decisions": final_state["decisions"],
-            "assumptions": final_state["assumptions"]
-        }
 
 
 _agent_instance = None
