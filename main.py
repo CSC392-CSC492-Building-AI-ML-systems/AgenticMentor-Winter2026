@@ -16,6 +16,7 @@ from src.protocols.schemas import (
 )
 from src.utils.config import settings
 from src.agents.requirements_collector import get_agent
+from src.storage.memory_store import default_memory_adapter
 
 
 projects_store: dict[str, ProjectState] = {}
@@ -71,9 +72,10 @@ async def create_project(project: ProjectCreate):
         created_at=datetime.now(),
         last_updated=datetime.now(),
     )
-    
-    projects_store[project_id] = project_state
-    
+
+    # Persist the created project via the in-memory adapter
+    await default_memory_adapter.save(project_id, project_state.model_dump())
+
     return ProjectResponse(
         project_id=project_state.project_id,
         name=project_state.name,
@@ -87,11 +89,12 @@ async def create_project(project: ProjectCreate):
 @app.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str):
     """Get project state by ID."""
-    if project_id not in projects_store:
+    state_dict = await default_memory_adapter.get(project_id)
+    if not state_dict:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    project_state = projects_store[project_id]
-    
+
+    project_state = ProjectState(**state_dict)
+
     return ProjectResponse(
         project_id=project_state.project_id,
         name=project_state.name,
@@ -105,18 +108,18 @@ async def get_project(project_id: str):
 @app.post("/projects/{project_id}/chat", response_model=ChatResponse)
 async def chat(project_id: str, request: ChatRequest):
     """Send a message and get agent response."""
-    if project_id not in projects_store:
+    state_dict = await default_memory_adapter.get(project_id)
+    if not state_dict:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    project_state = projects_store[project_id]
-    
+
+    project_state = ProjectState(**state_dict)
     user_message = ChatMessage(
         role=MessageRole.USER,
         content=request.message,
         timestamp=datetime.now()
     )
     project_state.conversation_history.append(user_message)
-    
+
     agent = get_agent()
     
     try:
@@ -130,16 +133,17 @@ async def chat(project_id: str, request: ChatRequest):
         project_state.decisions.extend(result["decisions"])
         project_state.assumptions.extend(result["assumptions"])
         project_state.last_updated = datetime.now()
-        
+
         assistant_message = ChatMessage(
             role=MessageRole.ASSISTANT,
             content=result["response"],
             timestamp=datetime.now()
         )
         project_state.conversation_history.append(assistant_message)
-        
-        projects_store[project_id] = project_state
-        
+
+        # Persist updated state
+        await default_memory_adapter.save(project_id, project_state.model_dump())
+
         return ChatResponse(
             message=result["response"],
             state={
@@ -161,10 +165,12 @@ async def chat(project_id: str, request: ChatRequest):
 @app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
 async def get_requirements(project_id: str):
     """Get current requirements state for a project."""
-    if project_id not in projects_store:
+    state_dict = await default_memory_adapter.get(project_id)
+    if not state_dict:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    return projects_store[project_id].requirements
+
+    project_state = ProjectState(**state_dict)
+    return project_state.requirements
 
 
 if __name__ == "__main__":
