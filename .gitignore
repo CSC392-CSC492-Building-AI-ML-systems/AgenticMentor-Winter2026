@@ -45,6 +45,7 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+test_output/
 
 # Logs
 *.log
@@ -54,5 +55,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 
-# Local project docs
+# Local project docs (changelog for personal/session use only)
 docs/changelog.md
+docs/changelog-session-2026-02-08.md
+CHANGELOG.md

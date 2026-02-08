@@ -54,6 +54,7 @@ class ArchitectureDefinition(BaseModel):
     """Architecture state fragment produced by the architect agent."""
 
     tech_stack: Dict[str, str] = Field(default_factory=dict)
+    tech_stack_rationale: Optional[str] = None  # LLM explanation for stack choices
     data_schema: Optional[str] = None
     system_diagram: Optional[str] = None
     api_design: List[APIEndpoint] = Field(default_factory=list)
