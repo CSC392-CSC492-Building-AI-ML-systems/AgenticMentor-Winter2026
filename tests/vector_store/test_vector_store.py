@@ -46,8 +46,8 @@ def test_query_empty_returns_empty(tmp_path: Path) -> None:
 
 def test_save_and_load(tmp_path: Path) -> None:
     """After save(), a new VectorStore with same path loads and returns same query results."""
-    # Start clean so leftover data from a previous run (e.g. failed rmtree on Windows) doesn't cause "got 4"
-    for f in ("persist.index", "persist_texts.json"):
+    # Start clean so leftover data from a previous run doesn't cause "got 4"
+    for f in ("persist.index", "persist_texts.json", "persist_metadata.json"):
         (tmp_path / f).unlink(missing_ok=True)
 
     store = VectorStore(store_name="persist", persist_dir=tmp_path)
@@ -93,6 +93,24 @@ def test_add_text_and_query_text(tmp_path: Path) -> None:
     assert results[0] == "flowchart with nodes and edges"
 
 
+def test_metadata_save_load_and_query_with_metadata(tmp_path: Path) -> None:
+    """Add items with metadata, save, load, and retrieve with query_with_metadata / meta_filter."""
+    dim = 4
+    store = VectorStore(store_name="meta", persist_dir=tmp_path)
+    store.add("flowchart nodes", _make_embedding(1, dim), metadata={"diagram_type": "flowchart", "source_url": "https://mermaid.js.org/syntax/flowchart.html"})
+    store.add("erd entities", _make_embedding(2, dim), metadata={"diagram_type": "erd", "source_url": "https://mermaid.js.org/syntax/entityRelationshipDiagram.html"})
+    store.add("flowchart edges", _make_embedding(3, dim), metadata={"diagram_type": "flowchart"})
+    store.save()
+
+    loaded = VectorStore(store_name="meta", persist_dir=tmp_path)
+    pairs = loaded.query_with_metadata(_make_embedding(1, dim), k=2)
+    assert len(pairs) == 2
+    texts = [p[0] for p in pairs]
+    metas = [p[1] for p in pairs]
+    assert "flowchart nodes" in texts
+    assert any(m and m.get("diagram_type") == "flowchart" for m in metas)
+
+
 if __name__ == "__main__":
     import sys
 
@@ -106,6 +124,7 @@ if __name__ == "__main__":
                 ("test_query_empty_returns_empty", lambda: test_query_empty_returns_empty(tmp_path / "empty")),
                 ("test_save_and_load", lambda: test_save_and_load(tmp_path / "save_load")),
                 ("test_add_text_and_query_text", lambda: test_add_text_and_query_text(tmp_path / "text")),
+                ("test_metadata_save_load_and_query_with_metadata", lambda: test_metadata_save_load_and_query_with_metadata(tmp_path / "meta")),
             ]
             for name, run in tests:
                 try:

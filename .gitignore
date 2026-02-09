@@ -41,6 +41,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Vector store data (FAISS index + ingested chunks; run scripts/ingest_mermaid_docs.py to build)
+data/vector_stores/
+
 # Testing
 .pytest_cache/
 .coverage
