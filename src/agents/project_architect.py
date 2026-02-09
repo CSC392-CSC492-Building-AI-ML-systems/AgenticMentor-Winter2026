@@ -1,20 +1,88 @@
-"""Project architect agent for technical design and architecture outputs."""
+"""Project architect agent using LangGraph for selective regeneration."""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Annotated
+from operator import add
+
+from pydantic import BaseModel, Field
+from langgraph.graph import StateGraph, END
 
 from src.agents.base_agent import BaseAgent
-from src.protocols.schemas import MermaidLLMResponse
 from src.protocols.review_protocol import ReviewResult
 from src.state.project_state import ArchitectureDefinition, ProjectState
 from src.tools.diagram_generator import DiagramGenerator
 from src.utils.token_optimizer import ContextExtractor
 
 
+# ============================================================================
+# Pydantic Schemas for LLM Structured Output
+# ============================================================================
+
+class RegenPlan(BaseModel):
+    """LLM-generated regeneration plan with reasoning."""
+    
+    artifacts_to_regenerate: List[str] = Field(
+        description="List of artifacts to regenerate: tech_stack, system_diagram, data_schema, api_design, deployment_strategy"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of why these artifacts need regeneration"
+    )
+    preserve_artifacts: List[str] = Field(
+        default_factory=list,
+        description="Artifacts to keep unchanged from existing state"
+    )
+
+
+class TechStackOutput(BaseModel):
+    """Structured tech stack output from LLM."""
+    
+    frontend: str = Field(description="Frontend framework/library")
+    backend: str = Field(description="Backend framework/language")
+    database: str = Field(description="Database system")
+    devops: str = Field(description="DevOps/CI-CD tooling")
+
+
+class MermaidDiagramOutput(BaseModel):
+    """Structured Mermaid diagram output from LLM."""
+    
+    mermaid_code: str = Field(description="Raw Mermaid.js code without markdown fences")
+
+
+# ============================================================================
+# LangGraph State Definition
+# ============================================================================
+
+class ArchitectState(TypedDict, total=False):
+    """State passed through the LangGraph workflow."""
+    
+    # Inputs
+    requirements: dict
+    existing_architecture: Optional[dict]
+    user_request: Optional[str]
+    
+    # LLM-determined regeneration plan
+    regen_plan: Optional[RegenPlan]
+    
+    # Generated/preserved outputs
+    tech_stack: Optional[dict]
+    system_diagram: Optional[str]
+    data_schema: Optional[str]
+    api_design: Optional[list]
+    deployment_strategy: Optional[str]
+    
+    # Metadata
+    app_type: Optional[str]
+    requirements_text: Optional[str]
+
+
+# ============================================================================
+# ProjectArchitectAgent with LangGraph
+# ============================================================================
+
 class ProjectArchitectAgent(BaseAgent):
-    """Defines technical stack and system diagrams from project requirements."""
+    """Defines technical stack and system diagrams with selective regeneration support."""
 
     description = "Defines technical stack and system diagrams."
 
@@ -32,57 +100,49 @@ class ProjectArchitectAgent(BaseAgent):
         self.state_manager = state_manager
         self.diagram_gen = DiagramGenerator()
         self.context_extractor = ContextExtractor()
+        self._graph = self._build_graph()
+
+    # ========================================================================
+    # Main Entry Point
+    # ========================================================================
 
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Build architecture outputs from requirements and return state delta payload.
+        Build architecture outputs from requirements.
+        
+        Supports two modes:
+        1. Full generation: No existing_architecture provided
+        2. Selective regeneration: existing_architecture + user_request provided
         """
         requirements = self._extract_requirements(input_data)
         if not requirements:
             raise ValueError("ProjectArchitectAgent requires populated requirements input.")
 
-        requirements_text = self._requirements_to_text(requirements)
-        if len(requirements_text) > 2800:
-            requirements_text = self.context_extractor.summarize_text(
-                requirements_text, max_chars=2800
+        # Prepare initial state for LangGraph
+        initial_state: ArchitectState = {
+            "requirements": requirements,
+            "existing_architecture": input_data.get("existing_architecture") or input_data.get("existing_state"),
+            "user_request": input_data.get("user_request"),
+            "requirements_text": self._requirements_to_text(requirements),
+            "app_type": self._infer_app_type(requirements),
+        }
+
+        # Token optimization for large requirements
+        if len(initial_state["requirements_text"]) > 2800:
+            initial_state["requirements_text"] = self.context_extractor.summarize_text(
+                initial_state["requirements_text"], max_chars=2800
             )
 
-        tech_stack = await self._draft_tech_stack(
-            requirements=requirements,
-            constraints=requirements.get("constraints", []),
-        )
+        # Run the LangGraph workflow
+        final_state = await self._graph.ainvoke(initial_state)
 
-        app_type = self._infer_app_type(requirements)
-        participants = ["User", "Frontend", "API", "Database"]
-        # Old deterministic tool generation path (kept for reference):
-        # system_diagram = await self.diagram_gen.generate_diagram(
-        #     type="c4_context",
-        #     context=f"{app_type}: {requirements_text}",
-        #     participants=participants,
-        # )
-        # erd = await self.diagram_gen.generate_diagram(
-        #     type="erd",
-        #     context=requirements_text,
-        # )
-
-        system_diagram = await self._generate_mermaid_with_llm(
-            diagram_kind="system",
-            requirements_text=requirements_text,
-            app_type=app_type,
-            participants=participants,
-        )
-        erd = await self._generate_mermaid_with_llm(
-            diagram_kind="erd",
-            requirements_text=requirements_text,
-            app_type=app_type,
-            participants=participants,
-        )
-
+        # Build ArchitectureDefinition from final state
         architecture = ArchitectureDefinition(
-            tech_stack=tech_stack,
-            data_schema=erd,
-            system_diagram=system_diagram,
-            deployment_strategy=self._propose_deployment_strategy(tech_stack, requirements),
+            tech_stack=final_state.get("tech_stack") or {},
+            data_schema=final_state.get("data_schema"),
+            system_diagram=final_state.get("system_diagram"),
+            api_design=final_state.get("api_design") or [],
+            deployment_strategy=final_state.get("deployment_strategy"),
         )
 
         architecture_dict = architecture.model_dump()
@@ -92,21 +152,364 @@ class ProjectArchitectAgent(BaseAgent):
             "state_delta": {"architecture": architecture_dict},
         }
 
+    # ========================================================================
+    # LangGraph Construction
+    # ========================================================================
+
+    def _build_graph(self) -> StateGraph:
+        """Construct the LangGraph StateGraph for architecture generation."""
+        
+        graph = StateGraph(ArchitectState)
+
+        # Add nodes
+        graph.add_node("analyze_impact", self._analyze_impact_node)
+        graph.add_node("generate_tech_stack", self._tech_stack_node)
+        graph.add_node("generate_system_diagram", self._system_diagram_node)
+        graph.add_node("generate_data_schema", self._data_schema_node)
+        graph.add_node("generate_deployment", self._deployment_node)
+
+        # Define flow
+        graph.set_entry_point("analyze_impact")
+        graph.add_edge("analyze_impact", "generate_tech_stack")
+        graph.add_edge("generate_tech_stack", "generate_system_diagram")
+        graph.add_edge("generate_system_diagram", "generate_data_schema")
+        graph.add_edge("generate_data_schema", "generate_deployment")
+        graph.add_edge("generate_deployment", END)
+
+        return graph.compile()
+
+    # ========================================================================
+    # LangGraph Nodes
+    # ========================================================================
+
+    async def _analyze_impact_node(self, state: ArchitectState) -> dict:
+        """Analyze user request to determine what needs regeneration."""
+        
+        existing = state.get("existing_architecture")
+        user_request = state.get("user_request")
+
+        # If no existing architecture or no user request, regenerate everything
+        if not existing or not user_request:
+            return {
+                "regen_plan": RegenPlan(
+                    artifacts_to_regenerate=["tech_stack", "system_diagram", "data_schema", "deployment_strategy"],
+                    reasoning="Full generation requested (no existing state or no specific request)",
+                    preserve_artifacts=[]
+                )
+            }
+
+        # Use LLM to analyze semantic impact
+        if self.llm_client is None:
+            # No LLM, regenerate everything
+            return {
+                "regen_plan": RegenPlan(
+                    artifacts_to_regenerate=["tech_stack", "system_diagram", "data_schema", "deployment_strategy"],
+                    reasoning="No LLM available for analysis",
+                    preserve_artifacts=[]
+                )
+            }
+
+        prompt = f"""Analyze what architecture artifacts need regeneration based on the user's request.
+
+EXISTING ARCHITECTURE:
+- Tech Stack: {json.dumps(existing.get('tech_stack', {}), indent=2)}
+- System Diagram: {'exists' if existing.get('system_diagram') else 'none'}
+- Data Schema (ERD): {'exists' if existing.get('data_schema') else 'none'}
+- Deployment Strategy: {existing.get('deployment_strategy', 'none')}
+
+USER REQUEST: "{user_request}"
+
+Determine which artifacts MUST be regenerated based on semantic impact.
+Valid artifact names: tech_stack, system_diagram, data_schema, deployment_strategy
+
+Examples of reasoning:
+- "Change database to MongoDB" → only data_schema needs regeneration
+- "Redo ERD only" → only data_schema needs regeneration
+- "Switch from React to Vue" → only tech_stack needs regeneration (diagrams reference concepts, not specific frameworks)
+- "Switch to microservices architecture" → tech_stack, system_diagram, deployment_strategy all need regeneration
+- "Regenerate everything" → all artifacts
+
+Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifacts (list).
+"""
+
+        try:
+            if hasattr(self.llm_client, "with_structured_output"):
+                structured_llm = self.llm_client.with_structured_output(RegenPlan)
+                regen_plan = await structured_llm.ainvoke(prompt)
+            else:
+                # Fallback: parse JSON response manually
+                response = await self._invoke_llm(prompt)
+                regen_plan = self._parse_regen_plan(response)
+            
+            return {"regen_plan": regen_plan}
+
+        except Exception:
+            # On error, regenerate everything
+            return {
+                "regen_plan": RegenPlan(
+                    artifacts_to_regenerate=["tech_stack", "system_diagram", "data_schema", "deployment_strategy"],
+                    reasoning="Analysis failed, defaulting to full regeneration",
+                    preserve_artifacts=[]
+                )
+            }
+
+    async def _tech_stack_node(self, state: ArchitectState) -> dict:
+        """Generate or preserve tech stack."""
+        
+        regen_plan = state.get("regen_plan")
+        existing = state.get("existing_architecture") or {}
+
+        # Check if we should preserve
+        if regen_plan and "tech_stack" not in regen_plan.artifacts_to_regenerate:
+            return {"tech_stack": existing.get("tech_stack", {})}
+
+        # Generate new tech stack
+        requirements = state.get("requirements", {})
+        constraints = requirements.get("constraints", [])
+        
+        tech_stack = await self._generate_tech_stack(requirements, constraints)
+        return {"tech_stack": tech_stack}
+
+    async def _system_diagram_node(self, state: ArchitectState) -> dict:
+        """Generate or preserve system diagram."""
+        
+        regen_plan = state.get("regen_plan")
+        existing = state.get("existing_architecture") or {}
+
+        # Check if we should preserve
+        if regen_plan and "system_diagram" not in regen_plan.artifacts_to_regenerate:
+            return {"system_diagram": existing.get("system_diagram")}
+
+        # Generate new system diagram
+        diagram = await self._generate_mermaid_diagram(
+            diagram_kind="system",
+            requirements_text=state.get("requirements_text", ""),
+            app_type=state.get("app_type", "Web application"),
+        )
+        return {"system_diagram": diagram}
+
+    async def _data_schema_node(self, state: ArchitectState) -> dict:
+        """Generate or preserve data schema (ERD)."""
+        
+        regen_plan = state.get("regen_plan")
+        existing = state.get("existing_architecture") or {}
+
+        # Check if we should preserve
+        if regen_plan and "data_schema" not in regen_plan.artifacts_to_regenerate:
+            return {"data_schema": existing.get("data_schema")}
+
+        # Generate new ERD
+        diagram = await self._generate_mermaid_diagram(
+            diagram_kind="erd",
+            requirements_text=state.get("requirements_text", ""),
+            app_type=state.get("app_type", "Web application"),
+        )
+        return {"data_schema": diagram}
+
+    async def _deployment_node(self, state: ArchitectState) -> dict:
+        """Generate or preserve deployment strategy."""
+        
+        regen_plan = state.get("regen_plan")
+        existing = state.get("existing_architecture") or {}
+
+        # Check if we should preserve
+        if regen_plan and "deployment_strategy" not in regen_plan.artifacts_to_regenerate:
+            return {"deployment_strategy": existing.get("deployment_strategy")}
+
+        # Generate new deployment strategy
+        tech_stack = state.get("tech_stack", {})
+        requirements = state.get("requirements", {})
+        
+        strategy = self._propose_deployment_strategy(tech_stack, requirements)
+        return {"deployment_strategy": strategy}
+
+    # ========================================================================
+    # Generation Helpers
+    # ========================================================================
+
+    async def _generate_tech_stack(
+        self, requirements: Dict[str, Any], constraints: List[str]
+    ) -> Dict[str, str]:
+        """Generate tech stack via LLM with fallback."""
+        
+        if self.llm_client is None:
+            return self._default_tech_stack(constraints)
+
+        prompt = (
+            "You are a Senior Software Architect. Analyze the requirements and output "
+            "a JSON object with keys: frontend, backend, database, devops. "
+            "Constraints must be respected.\n\n"
+            f"Requirements: {json.dumps(requirements, ensure_ascii=True)}\n"
+            f"Constraints: {json.dumps(constraints, ensure_ascii=True)}"
+        )
+
+        try:
+            if hasattr(self.llm_client, "with_structured_output"):
+                structured_llm = self.llm_client.with_structured_output(TechStackOutput)
+                result = await structured_llm.ainvoke(prompt)
+                return result.model_dump()
+            else:
+                response = await self._invoke_llm(prompt)
+                return self._parse_tech_stack(response) or self._default_tech_stack(constraints)
+        except Exception:
+            return self._default_tech_stack(constraints)
+
+    async def _generate_mermaid_diagram(
+        self,
+        diagram_kind: str,
+        requirements_text: str,
+        app_type: str,
+    ) -> str:
+        """Generate Mermaid diagram via LLM with fallback."""
+        
+        participants = ["User", "Frontend", "API", "Database"]
+        
+        # Fallback diagram
+        fallback_type = "erd" if diagram_kind == "erd" else "c4_context"
+        fallback_diagram = await self.diagram_gen.generate_diagram(
+            type=fallback_type,
+            context=f"{app_type}: {requirements_text}" if diagram_kind != "erd" else requirements_text,
+            participants=participants if diagram_kind != "erd" else None,
+        )
+
+        if self.llm_client is None:
+            return fallback_diagram
+
+        if diagram_kind == "erd":
+            prompt = (
+                "You are a software architect. Generate a Mermaid.js ERD diagram.\n"
+                "Output ONLY the raw Mermaid code starting with 'erDiagram'.\n"
+                "Do NOT include markdown fences.\n\n"
+                f"Requirements: {requirements_text}"
+            )
+        else:
+            prompt = (
+                "You are a software architect. Generate a Mermaid.js system context diagram.\n"
+                "Output ONLY the raw Mermaid code starting with 'flowchart' or 'graph'.\n"
+                "Do NOT include markdown fences.\n\n"
+                f"Application Type: {app_type}\n"
+                f"Participants: {', '.join(participants)}\n"
+                f"Requirements: {requirements_text}"
+            )
+
+        try:
+            if hasattr(self.llm_client, "with_structured_output"):
+                structured_llm = self.llm_client.with_structured_output(MermaidDiagramOutput)
+                result = await structured_llm.ainvoke(prompt)
+                mermaid = result.mermaid_code.strip()
+            else:
+                response = await self._invoke_llm(prompt)
+                mermaid = self._extract_mermaid_code(response)
+
+            if self._is_valid_mermaid(mermaid):
+                return mermaid
+            return fallback_diagram
+
+        except Exception:
+            return fallback_diagram
+
+    async def _invoke_llm(self, prompt: str) -> str:
+        """Invoke LLM with various client interfaces."""
+        if hasattr(self.llm_client, "generate"):
+            response = await self.llm_client.generate(prompt)
+        elif hasattr(self.llm_client, "ainvoke"):
+            response = await self.llm_client.ainvoke(prompt)
+        else:
+            return ""
+        
+        return response if isinstance(response, str) else str(response)
+
+    # ========================================================================
+    # Parsing Helpers
+    # ========================================================================
+
+    def _parse_regen_plan(self, response: str) -> RegenPlan:
+        """Parse RegenPlan from raw LLM response."""
+        text = self._extract_json_from_response(response)
+        try:
+            return RegenPlan.model_validate_json(text)
+        except Exception:
+            return RegenPlan(
+                artifacts_to_regenerate=["tech_stack", "system_diagram", "data_schema", "deployment_strategy"],
+                reasoning="Failed to parse response",
+                preserve_artifacts=[]
+            )
+
+    def _parse_tech_stack(self, response: str) -> Optional[Dict[str, str]]:
+        """Parse tech stack from raw LLM response."""
+        text = self._extract_json_from_response(response)
+        try:
+            parsed = json.loads(text)
+            required = {"frontend", "backend", "database", "devops"}
+            if isinstance(parsed, dict) and required.issubset(parsed.keys()):
+                return {k: str(v) if isinstance(v, str) else str(list(v.values())[0]) if isinstance(v, dict) else str(v) for k, v in parsed.items() if k in required}
+        except Exception:
+            pass
+        return None
+
+    def _extract_json_from_response(self, text: str) -> str:
+        """Extract JSON from markdown code blocks if present."""
+        text = text.strip()
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end > start:
+                return text[start:end].strip()
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                return text[start:end].strip()
+        return text
+
+    def _extract_mermaid_code(self, text: str) -> str:
+        """Extract Mermaid code from response."""
+        text = text.strip()
+        # Remove markdown fences
+        if "```mermaid" in text:
+            start = text.find("```mermaid") + 10
+            end = text.find("```", start)
+            if end > start:
+                return text[start:end].strip()
+        if "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                return text[start:end].strip()
+        
+        # Look for diagram start tokens
+        for token in ("flowchart", "graph", "erDiagram", "sequenceDiagram"):
+            idx = text.find(token)
+            if idx != -1:
+                return text[idx:].strip()
+        return text
+
+    def _default_tech_stack(self, constraints: List[str]) -> Dict[str, str]:
+        """Generate default tech stack based on constraints."""
+        constraints_text = " ".join(str(c).lower() for c in constraints)
+        backend = "FastAPI (Python)" if "python" in constraints_text else "Node.js (NestJS)"
+        return {
+            "frontend": "React (Next.js)",
+            "backend": backend,
+            "database": "PostgreSQL",
+            "devops": "Docker + GitHub Actions",
+        }
+
+    # ========================================================================
+    # Review Protocol
+    # ========================================================================
+
     async def review(
         self, artifact: Any, context: Optional[dict] = None
     ) -> ReviewResult:
-        """
-        Validate shared quality dimensions plus architect-specific checks.
-        """
+        """Validate architecture output."""
         base_result = await super().review(artifact, context or {})
         issues = list(base_result.feedback)
 
         if not isinstance(artifact, dict):
             issues.append("Architect output must be a dictionary")
             return ReviewResult(
-                is_valid=False,
-                score=0.0,
-                feedback=self._dedupe(issues),
+                is_valid=False, score=0.0, feedback=self._dedupe(issues),
                 detailed_scores=base_result.detailed_scores,
             )
 
@@ -117,9 +520,7 @@ class ProjectArchitectAgent(BaseAgent):
         if not isinstance(architecture, dict):
             issues.append("Architecture payload must be a dictionary")
             return ReviewResult(
-                is_valid=False,
-                score=0.0,
-                feedback=self._dedupe(issues),
+                is_valid=False, score=0.0, feedback=self._dedupe(issues),
                 detailed_scores=base_result.detailed_scores,
             )
 
@@ -129,34 +530,20 @@ class ProjectArchitectAgent(BaseAgent):
                 issues.append(f"Architecture field missing: {field_name}")
 
         tech_stack = architecture.get("tech_stack", {})
-        if not isinstance(tech_stack, dict):
-            issues.append("Tech stack must be a dictionary")
-        else:
+        if isinstance(tech_stack, dict):
             required_stack_keys = {"frontend", "backend", "database", "devops"}
             missing = sorted(required_stack_keys.difference(tech_stack.keys()))
             if missing:
                 issues.append(f"Tech stack missing required components: {', '.join(missing)}")
 
         for diagram_field in ("system_diagram", "data_schema"):
-            diagram_code = architecture.get(diagram_field)
-            if not self._is_valid_mermaid(diagram_code):
+            if not self._is_valid_mermaid(architecture.get(diagram_field)):
                 issues.append(f"Invalid Mermaid syntax in {diagram_field}")
-
-        if not self._tech_stack_covers_requirements(
-            tech_stack=tech_stack,
-            requirements=(context or {}).get("requirements", {}),
-        ):
-            issues.append("Tech stack does not clearly cover functional requirements")
-
-        if not self._respects_constraints(
-            tech_stack=tech_stack,
-            requirements=(context or {}).get("requirements", {}),
-        ):
-            issues.append("Tech stack conflicts with stated project constraints")
 
         issues = self._dedupe(issues)
         score_penalty = min(0.6, 0.1 * len(issues))
         adjusted_score = max(0.0, base_result.score - score_penalty)
+        
         return ReviewResult(
             is_valid=(adjusted_score >= self.reviewer.min_score and not issues),
             score=adjusted_score,
@@ -165,6 +552,7 @@ class ProjectArchitectAgent(BaseAgent):
         )
 
     async def _generate(self, input: Any, context: dict, tools: list) -> Dict[str, Any]:
+        """BaseAgent interface for execute() compatibility."""
         payload: Dict[str, Any]
         if isinstance(input, dict):
             payload = dict(input)
@@ -184,21 +572,20 @@ class ProjectArchitectAgent(BaseAgent):
             "consistency": 0.2,
         }
 
+    # ========================================================================
+    # Utility Methods
+    # ========================================================================
+
     def _extract_requirements(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         requirements = input_data.get("requirements")
         if isinstance(requirements, ProjectState):
             return requirements.requirements.model_dump()
-
         if isinstance(input_data.get("state"), ProjectState):
-            state: ProjectState = input_data["state"]
-            return state.requirements.model_dump()
-
+            return input_data["state"].requirements.model_dump()
         if hasattr(requirements, "model_dump"):
             return requirements.model_dump()
-
         if isinstance(requirements, dict):
             return requirements
-
         return {}
 
     def _requirements_to_text(self, requirements: Dict[str, Any]) -> str:
@@ -217,197 +604,6 @@ class ProjectArchitectAgent(BaseAgent):
         if user_stories:
             lines.append("User stories: " + "; ".join(str(item) for item in user_stories[:5]))
         return " | ".join(lines)
-
-    async def _draft_tech_stack(
-        self, requirements: Dict[str, Any], constraints: List[str]
-    ) -> Dict[str, str]:
-        llm_result = await self._draft_tech_stack_with_llm(requirements, constraints)
-        if llm_result:
-            return llm_result
-
-        constraints_text = " ".join(str(c).lower() for c in constraints)
-        backend = "FastAPI (Python)" if "python" in constraints_text else "Node.js (NestJS)"
-        frontend = "React (Next.js)"
-        database = "PostgreSQL"
-        devops = "Docker + GitHub Actions"
-
-        return {
-            "frontend": frontend,
-            "backend": backend,
-            "database": database,
-            "devops": devops,
-        }
-
-    async def _draft_tech_stack_with_llm(
-        self, requirements: Dict[str, Any], constraints: List[str]
-    ) -> Dict[str, str]:
-        if self.llm_client is None:
-            return {}
-
-        prompt = (
-            "You are a Senior Software Architect. Analyze the requirements and output "
-            "strict JSON with keys: frontend, backend, database, devops. "
-            "Constraints must be respected.\n\n"
-            f"Requirements: {json.dumps(requirements, ensure_ascii=True)}\n"
-            f"Constraints: {json.dumps(constraints, ensure_ascii=True)}"
-        )
-
-        raw_response: Any = None
-        if hasattr(self.llm_client, "generate"):
-            raw_response = await self.llm_client.generate(prompt)
-        elif hasattr(self.llm_client, "ainvoke"):
-            raw_response = await self.llm_client.ainvoke(prompt)
-        else:
-            return {}
-
-        text = raw_response if isinstance(raw_response, str) else str(raw_response)
-        
-        # Try to extract JSON from markdown code blocks if present
-        if "```json" in text:
-            start = text.find("```json") + 7
-            end = text.find("```", start)
-            if end > start:
-                text = text[start:end].strip()
-        elif "```" in text:
-            start = text.find("```") + 3
-            end = text.find("```", start)
-            if end > start:
-                text = text[start:end].strip()
-        
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return {}
-
-        required = {"frontend", "backend", "database", "devops"}
-        if not isinstance(parsed, dict) or not required.issubset(parsed.keys()):
-            return {}
-
-        # Handle nested structures: extract string from nested dicts/lists
-        result = {}
-        for key in required:
-            value = parsed[key]
-            if isinstance(value, str):
-                result[key] = value
-            elif isinstance(value, dict):
-                # LLM might return {"technologies": [...], "justification": "..."}
-                if "technologies" in value and isinstance(value["technologies"], list) and value["technologies"]:
-                    result[key] = str(value["technologies"][0])
-                elif "name" in value:
-                    result[key] = str(value["name"])
-                else:
-                    # Take first string value found
-                    result[key] = str(list(value.values())[0]) if value else "Unknown"
-            elif isinstance(value, list) and value:
-                result[key] = str(value[0])
-            else:
-                result[key] = str(value)
-
-        return result
-
-    async def _generate_mermaid_with_llm(
-        self,
-        diagram_kind: str,
-        requirements_text: str,
-        app_type: str,
-        participants: List[str],
-    ) -> str:
-        fallback_type = "erd" if diagram_kind == "erd" else "c4_context"
-        fallback_diagram = await self.diagram_gen.generate_diagram(
-            type=fallback_type,
-            context=f"{app_type}: {requirements_text}" if diagram_kind != "erd" else requirements_text,
-            participants=participants if diagram_kind != "erd" else None,
-        )
-        if self.llm_client is None:
-            
-            return fallback_diagram
-
-        if diagram_kind == "erd":
-            prompt = (
-                "You are a software architect. Output strict JSON only with keys: "
-                'diagram_type and mermaid_code. diagram_type must be "erd". '
-                "mermaid_code must be raw Mermaid.js code that starts with erDiagram "
-                "and must not include markdown fences.\n\n"
-                f"Requirements: {requirements_text}"
-            )
-        else:
-            prompt = (
-                "You are a software architect. Output strict JSON only with keys: "
-                'diagram_type and mermaid_code. diagram_type must be "system". '
-                "mermaid_code must be raw Mermaid.js system-context code that starts with "
-                "flowchart or graph and must not include markdown fences.\n\n"
-                f"Application Type: {app_type}\n"
-                f"Participants: {', '.join(participants)}\n"
-                f"Requirements: {requirements_text}"
-            )
-
-        raw_response: Any = None
-        if hasattr(self.llm_client, "generate"):
-            raw_response = await self.llm_client.generate(prompt)
-        elif hasattr(self.llm_client, "ainvoke"):
-            raw_response = await self.llm_client.ainvoke(prompt)
-        else:
-            return fallback_diagram
-
-        text = raw_response if isinstance(raw_response, str) else str(raw_response)
-        
-        mermaid = self._extract_mermaid_from_structured_response(
-            raw_text=text,
-            expected_diagram_kind=diagram_kind,
-)
-        
-        if self._is_valid_mermaid(mermaid):
-            return mermaid
-        return fallback_diagram
-
-    def _extract_mermaid_from_structured_response(
-        self, raw_text: str, expected_diagram_kind: str
-    ) -> str:
-        text = raw_text.strip()
-        
-        # Extract JSON from markdown code blocks if present
-        if "```json" in text:
-            start = text.find("```json") + 7
-            end = text.find("```", start)
-            if end > start:
-                text = text[start:end].strip()
-        elif "```" in text:
-            start = text.find("```") + 3
-            end = text.find("```", start)
-            if end > start:
-                text = text[start:end].strip()
-        
-        try:
-            parsed = MermaidLLMResponse.model_validate_json(text)
-        except Exception:
-            return ""
-
-        if parsed.diagram_type != expected_diagram_kind:
-            return ""
-        return parsed.mermaid_code.strip()
-
-    # Old free-text extraction heuristic (replaced by structured JSON + pydantic validation):
-    # def _extract_mermaid_code(self, text: str) -> str:
-    #     stripped = (text or "").strip()
-    #     if not stripped:
-    #         return ""
-    #
-    #     if "```" in stripped:
-    #         blocks = stripped.split("```")
-    #         for block in blocks:
-    #             candidate = block.strip()
-    #             if candidate.startswith("mermaid"):
-    #                 candidate = candidate[len("mermaid") :].strip()
-    #             if candidate.startswith(
-    #                 ("flowchart", "graph", "sequenceDiagram", "erDiagram", "classDiagram")
-    #             ):
-    #                 return candidate
-    #
-    #     for token in ("flowchart", "graph", "sequenceDiagram", "erDiagram", "classDiagram"):
-    #         idx = stripped.find(token)
-    #         if idx != -1:
-    #             return stripped[idx:].strip()
-    #     return stripped
 
     def _infer_app_type(self, requirements: Dict[str, Any]) -> str:
         corpus = " ".join(
@@ -451,33 +647,6 @@ class ProjectArchitectAgent(BaseAgent):
             return False
         starts = ("flowchart", "graph", "sequenceDiagram", "erDiagram", "classDiagram")
         return diagram_code.strip().startswith(starts)
-
-    def _tech_stack_covers_requirements(
-        self, tech_stack: Dict[str, Any], requirements: Dict[str, Any]
-    ) -> bool:
-        if not isinstance(tech_stack, dict) or not tech_stack:
-            return False
-        required_keys = {"frontend", "backend", "database", "devops"}
-        if not required_keys.issubset(set(tech_stack.keys())):
-            return False
-        functional = requirements.get("functional", []) if isinstance(requirements, dict) else []
-        return isinstance(functional, list)
-
-    def _respects_constraints(
-        self, tech_stack: Dict[str, Any], requirements: Dict[str, Any]
-    ) -> bool:
-        if not isinstance(requirements, dict):
-            return True
-
-        constraints = requirements.get("constraints", [])
-        if not isinstance(constraints, list):
-            return True
-
-        normalized_constraints = " ".join(str(item).lower() for item in constraints)
-        if "python" in normalized_constraints:
-            backend = str(tech_stack.get("backend", "")).lower()
-            return "python" in backend or "fastapi" in backend
-        return True
 
     def _dedupe(self, items: List[str]) -> List[str]:
         seen = set()

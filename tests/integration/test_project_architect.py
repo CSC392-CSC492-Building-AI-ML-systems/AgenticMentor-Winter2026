@@ -121,11 +121,97 @@ async def main():
 
         print("\n" + "=" * 60)
         print("Test completed.")
+        return result  # Return for use in selective regen test
 
     except Exception as e:
         print(f"\n❌ Error: {type(e).__name__}: {e}")
         raise
 
 
+async def test_selective_regeneration():
+    """Test selective regeneration - only regenerate specific artifacts."""
+    print("\n" + "=" * 60)
+    print("Selective Regeneration Test")
+    print("=" * 60)
+
+    # Initialize components
+    llm = GeminiClient(model="gemini-2.5-flash")
+    
+    from src.state.state_manager import StateManager
+    persistence = MockPersistenceAdapter()
+    state_manager = StateManager(persistence_adapter=persistence)
+
+    agent = ProjectArchitectAgent(
+        state_manager=state_manager,
+        llm_client=llm,
+    )
+
+    # Step 1: Full generation
+    print("\n🔄 Step 1: Full architecture generation...")
+    test_input = {
+        "requirements": {
+            "functional": ["User login", "Dashboard", "REST API"],
+            "constraints": ["Must use Python for backend"],
+        }
+    }
+    
+    result1 = await agent.process(test_input)
+    arch1 = result1["architecture"]
+    
+    print(f"   Tech Stack: {arch1.get('tech_stack', {}).get('backend', 'N/A')}")
+    print(f"   System Diagram: {'✓ generated' if arch1.get('system_diagram') else '✗ missing'}")
+    print(f"   ERD: {'✓ generated' if arch1.get('data_schema') else '✗ missing'}")
+
+    # Step 2: Selective regeneration - only ERD
+    print("\n🔄 Step 2: Selective regeneration (ERD only)...")
+    print('   User request: "Please regenerate only the ERD diagram"')
+    
+    result2 = await agent.process({
+        "requirements": test_input["requirements"],
+        "existing_architecture": arch1,
+        "user_request": "Please regenerate only the ERD diagram"
+    })
+    arch2 = result2["architecture"]
+
+    # Compare results
+    print("\n📊 Comparison:")
+    
+    tech_stack_preserved = arch2.get("tech_stack") == arch1.get("tech_stack")
+    print(f"   Tech Stack preserved: {'✓ YES' if tech_stack_preserved else '✗ NO (regenerated)'}")
+    
+    system_diagram_preserved = arch2.get("system_diagram") == arch1.get("system_diagram")
+    print(f"   System Diagram preserved: {'✓ YES' if system_diagram_preserved else '✗ NO (regenerated)'}")
+    
+    erd_changed = arch2.get("data_schema") != arch1.get("data_schema")
+    print(f"   ERD regenerated: {'✓ YES' if erd_changed else '✗ NO (same as before)'}")
+
+    # Step 3: Selective regeneration - tech stack (should cascade)
+    print("\n🔄 Step 3: Selective regeneration (tech stack change)...")
+    print('   User request: "Change the backend to Node.js with Express"')
+    
+    result3 = await agent.process({
+        "requirements": test_input["requirements"],
+        "existing_architecture": arch1,
+        "user_request": "Change the backend to Node.js with Express"
+    })
+    arch3 = result3["architecture"]
+
+    print("\n📊 Comparison (tech stack change should cascade):")
+    
+    tech_stack_changed = arch3.get("tech_stack") != arch1.get("tech_stack")
+    print(f"   Tech Stack changed: {'✓ YES' if tech_stack_changed else '✗ NO'}")
+    print(f"   New backend: {arch3.get('tech_stack', {}).get('backend', 'N/A')}")
+
+    print("\n" + "=" * 60)
+    print("Selective regeneration test completed.")
+    print("=" * 60)
+
+
+async def run_all_tests():
+    """Run all integration tests."""
+    await main()
+    await test_selective_regeneration()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_all_tests())
