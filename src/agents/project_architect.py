@@ -98,7 +98,10 @@ class ProjectArchitectAgent(BaseAgent):
         return {
             "summary": self._architecture_summary(architecture_dict),
             "architecture": architecture_dict,
-            "state_delta": {"architecture": architecture_dict},
+            "state_delta": {
+                "architecture": architecture_dict,
+                "requirements": requirements,
+            },
         }
 
     async def review(
