@@ -8,6 +8,7 @@ Or: pytest tests/vector_store/test_mermaid_ingest.py -v
 import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -109,6 +110,69 @@ def test_query_mermaid_store_returns_metadata() -> None:
             assert "diagram_type" in meta or "source_url" in meta
 
 
+def test_architect_rag_snippets_when_store_exists() -> None:
+    """When mermaid store exists and embedder loads, architect's _get_mermaid_rag_snippets returns non-empty for system and erd."""
+    from src.agents.project_architect import ProjectArchitectAgent
+
+    index_path = project_root / "data" / "vector_stores" / "mermaid.index"
+    if not index_path.is_file():
+        return  # skip when store not built
+    agent = ProjectArchitectAgent(state_manager=None, llm_client=None)
+    system_snippets = agent._get_mermaid_rag_snippets("system")
+    erd_snippets = agent._get_mermaid_rag_snippets("erd")
+    # Skip if both empty (e.g. embedder failed to load in sandbox/CI)
+    if not system_snippets and not erd_snippets:
+        return
+    assert system_snippets, "expected non-empty RAG snippets for system/flowchart when store and embedder available"
+    assert erd_snippets, "expected non-empty RAG snippets for erd when store and embedder available"
+
+
+def test_architect_rag_snippets_query_override_error_message() -> None:
+    """When query_override is set (e.g. validator error), store is queried with that text and snippets are returned."""
+    from src.agents.project_architect import ProjectArchitectAgent
+
+    agent = ProjectArchitectAgent(state_manager=None, llm_client=None)
+    error_like_query = "parentheses in edge labels cause parse errors"
+    mock_chunk = "Edge labels: use pipe syntax A -->|label| B. Do not put parentheses in edge labels."
+
+    mock_store = MagicMock()
+    mock_store.query_text_with_metadata.return_value = [
+        (mock_chunk, {"diagram_type": "flowchart"}),
+    ]
+
+    with patch.object(agent, "_get_mermaid_store", return_value=mock_store):
+        result = agent._get_mermaid_rag_snippets(
+            "flowchart",
+            max_chars=500,
+            query_override=error_like_query,
+        )
+
+    mock_store.query_text_with_metadata.assert_called_once()
+    call_kw = mock_store.query_text_with_metadata.call_args
+    assert call_kw[0][0] == error_like_query
+    assert call_kw[1]["meta_filter"] == {"diagram_type": "flowchart"}
+    assert call_kw[1]["k"] == 3
+    assert mock_chunk in result
+
+
+def test_architect_rag_snippets_query_override_truncated_to_300() -> None:
+    """query_override is truncated to 300 chars when used as the search query."""
+    from src.agents.project_architect import ProjectArchitectAgent
+
+    agent = ProjectArchitectAgent(state_manager=None, llm_client=None)
+    long_error = "x" * 400
+
+    mock_store = MagicMock()
+    mock_store.query_text_with_metadata.return_value = []
+
+    with patch.object(agent, "_get_mermaid_store", return_value=mock_store):
+        agent._get_mermaid_rag_snippets("erd", query_override=long_error)
+
+    call_args = mock_store.query_text_with_metadata.call_args[0][0]
+    assert len(call_args) == 300
+    assert call_args == "x" * 300
+
+
 if __name__ == "__main__":
     import shutil
     tmp = project_root / "test_output" / "mermaid_ingest_test"
@@ -124,6 +188,12 @@ if __name__ == "__main__":
         print("PASSED: test_ingest_pipeline_with_mock_content")
         test_query_mermaid_store_returns_metadata()
         print("PASSED: test_query_mermaid_store_returns_metadata")
+        test_architect_rag_snippets_when_store_exists()
+        print("PASSED: test_architect_rag_snippets_when_store_exists")
+        test_architect_rag_snippets_query_override_error_message()
+        print("PASSED: test_architect_rag_snippets_query_override_error_message")
+        test_architect_rag_snippets_query_override_truncated_to_300()
+        print("PASSED: test_architect_rag_snippets_query_override_truncated_to_300")
         print("All mermaid ingest tests passed.")
     except Exception as e:
         print(f"FAILED: {e}")

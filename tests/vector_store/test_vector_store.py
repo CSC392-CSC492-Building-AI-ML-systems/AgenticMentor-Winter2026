@@ -111,6 +111,23 @@ def test_metadata_save_load_and_query_with_metadata(tmp_path: Path) -> None:
     assert any(m and m.get("diagram_type") == "flowchart" for m in metas)
 
 
+def test_query_text_with_metadata_filter_empty_when_no_match(tmp_path: Path) -> None:
+    """query_text_with_metadata with meta_filter returns empty when no chunks match the filter."""
+    dim = 4
+    class MockEmbedder:
+        def encode(self, text: str):
+            h = hash(text) % (2**32)
+            np.random.seed(h)
+            return np.random.randn(dim).astype(np.float32)
+
+    store = VectorStore(store_name="filter", persist_dir=tmp_path, embedder=MockEmbedder())
+    store.add_text("only flowchart content", metadata={"diagram_type": "flowchart"})
+    store.add_text("more flowchart", metadata={"diagram_type": "flowchart"})
+    # Filter for erd - no chunks have diagram_type erd
+    pairs = store.query_text_with_metadata("erDiagram entities", k=2, meta_filter={"diagram_type": "erd"})
+    assert pairs == []
+
+
 if __name__ == "__main__":
     import sys
 
@@ -125,6 +142,7 @@ if __name__ == "__main__":
                 ("test_save_and_load", lambda: test_save_and_load(tmp_path / "save_load")),
                 ("test_add_text_and_query_text", lambda: test_add_text_and_query_text(tmp_path / "text")),
                 ("test_metadata_save_load_and_query_with_metadata", lambda: test_metadata_save_load_and_query_with_metadata(tmp_path / "meta")),
+                ("test_query_text_with_metadata_filter_empty_when_no_match", lambda: test_query_text_with_metadata_filter_empty_when_no_match(tmp_path / "filter")),
             ]
             for name, run in tests:
                 try:

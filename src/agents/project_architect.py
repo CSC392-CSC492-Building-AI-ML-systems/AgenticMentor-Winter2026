@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.agents.base_agent import BaseAgent
@@ -34,6 +35,7 @@ class ProjectArchitectAgent(BaseAgent):
         self.state_manager = state_manager
         self.diagram_gen = DiagramGenerator()
         self.context_extractor = ContextExtractor()
+        self._mermaid_store: Any = None  # lazy-loaded for RAG snippets
 
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -318,6 +320,73 @@ class ProjectArchitectAgent(BaseAgent):
                 break
         return result, explanation
 
+    def _get_mermaid_store(self) -> Any:
+        """Lazy-load mermaid vector store (same embedder as ingest). Returns None if unavailable."""
+        if self._mermaid_store is not None:
+            return self._mermaid_store
+        try:
+            from sentence_transformers import SentenceTransformer
+            from src.tools.vector_store import VectorStore
+            project_root = Path(__file__).resolve().parents[2]
+            persist_dir = project_root / "data" / "vector_stores"
+            if not (persist_dir / "mermaid.index").is_file():
+                return None
+            embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            self._mermaid_store = VectorStore(
+                store_name="mermaid",
+                persist_dir=persist_dir,
+                embedder=embedder,
+            )
+            if len(self._mermaid_store) == 0:
+                self._mermaid_store = None
+            return self._mermaid_store
+        except Exception:
+            return None
+
+    def _get_mermaid_rag_snippets(
+        self,
+        diagram_kind: str,
+        max_chars: int = 1500,
+        query_override: str | None = None,
+    ) -> str:
+        """Return concatenated RAG snippets for the diagram type, or empty string if unavailable.
+        When query_override is set (e.g. validator error message), use it to retrieve error-relevant chunks."""
+        store = self._get_mermaid_store()
+        if store is None:
+            return ""
+        try:
+            if query_override and query_override.strip():
+                query = query_override.strip()[:300]  # cap so query is not huge
+            elif diagram_kind == "erd":
+                query = "erDiagram entities relationships attributes"
+            else:
+                query = "flowchart TD graph nodes edges labels"
+            if diagram_kind == "erd":
+                pairs = store.query_text_with_metadata(
+                    query,
+                    k=3,
+                    meta_filter={"diagram_type": "erd"},
+                )
+            else:
+                pairs = store.query_text_with_metadata(
+                    query,
+                    k=3,
+                    meta_filter={"diagram_type": "flowchart"},
+                )
+            if not pairs:
+                return ""
+            out: List[str] = []
+            total = 0
+            for text, _ in pairs:
+                if total + len(text) > max_chars:
+                    out.append(text[: max_chars - total].strip())
+                    break
+                out.append(text.strip())
+                total += len(text)
+            return "\n\n---\n\n".join(out) if out else ""
+        except Exception:
+            return ""
+
     async def _generate_mermaid_with_llm(
         self,
         diagram_kind: str,
@@ -335,6 +404,14 @@ class ProjectArchitectAgent(BaseAgent):
             
             return fallback_diagram
 
+        rag_snippets = self._get_mermaid_rag_snippets(diagram_kind)
+        if rag_snippets:
+            print(f"  [diagram] Using mermaid RAG snippets for {diagram_kind} ({len(rag_snippets)} chars)", flush=True)
+        rag_block = (
+            f"Relevant Mermaid syntax (from docs):\n{rag_snippets}\n\n"
+            if rag_snippets else ""
+        )
+
         if diagram_kind == "erd":
             prompt = (
                 "You are a software architect. Output strict JSON only with keys: "
@@ -343,6 +420,7 @@ class ProjectArchitectAgent(BaseAgent):
                 "and must not include markdown fences. "
                 "Include every entity and relationship implied by the requirements (e.g. users, sessions, core domain entities, audit/log tables). "
                 "Use proper Mermaid erDiagram syntax: entity blocks with attributes and relationship lines (||--o{, }o--||, etc.).\n\n"
+                f"{rag_block}"
                 f"Requirements: {requirements_text}"
             )
         else:
@@ -356,6 +434,7 @@ class ProjectArchitectAgent(BaseAgent):
                 "2. Node labels that contain parentheses or commas MUST be in double quotes inside brackets, e.g. N[\"Frontend (Web UI)\"] or N[\"Cache (e.g. Redis)\"]. Unquoted [Frontend (Web UI)] causes parse errors.\n"
                 "3. Use simple node IDs (letters, no spaces) then the label: ID[Label] or ID[\"Label with (parens)\"].\n"
                 "Show the main components and label edges with the main flows. Reflect the actual requirements.\n\n"
+                f"{rag_block}"
                 f"Application Type: {app_type}\n"
                 f"Participants: {', '.join(participants)}\n"
                 f"Requirements: {requirements_text}"
@@ -366,12 +445,25 @@ class ProjectArchitectAgent(BaseAgent):
         for attempt in range(max_diagram_attempts):
             if attempt > 0:
                 print(f"  [diagram] Retry {attempt + 1}/{max_diagram_attempts} for {diagram_kind} (validation failed)...", flush=True)
+                # Query RAG with the error message to get error-relevant syntax chunks
+                retry_rag = ""
+                if last_parse_error:
+                    retry_rag = self._get_mermaid_rag_snippets(
+                        diagram_kind, max_chars=1000, query_override=last_parse_error
+                    )
+                    if retry_rag:
+                        print(f"  [diagram] Using error-based RAG for retry ({len(retry_rag)} chars)", flush=True)
+                retry_rag_block = (
+                    f"Relevant Mermaid syntax (for this error):\n{retry_rag}\n\n"
+                    if retry_rag else ""
+                )
                 correction = (
                     "Your previous Mermaid code had syntax errors. "
                     "Fix the diagram and output valid Mermaid only (JSON with diagram_type and mermaid_code). "
                 )
                 if last_parse_error:
                     correction += f"Parse error from validator:\n{last_parse_error}\n\n"
+                correction = retry_rag_block + correction
                 correction += (
                     "Rules: (1) edge labels use -->|label| only; no parentheses in edge labels. "
                     "(2) node labels with parentheses must be quoted: N[\"Label (detail)\"].\n\n"
