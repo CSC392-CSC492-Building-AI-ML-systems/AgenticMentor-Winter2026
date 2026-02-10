@@ -21,6 +21,69 @@ if str(project_root) not in sys.path:
 from src.adapters.llm_clients import GeminiClient
 from src.agents.project_architect import ProjectArchitectAgent
 
+# Simple scenario used by the base integration test
+SIMPLE_REQUIREMENTS = {
+    "requirements": {
+        "functional": [
+            "User authentication with email and password",
+            "Dashboard showing user activity",
+            "REST API for mobile clients",
+        ],
+        "non_functional": [
+            "Must handle 500 concurrent users",
+            "Response time under 200ms for API calls",
+        ],
+        "constraints": [
+            "Must use Python for backend",
+        ],
+    }
+}
+
+# Complex scenario from friend's test case
+COMPLEX_REQUIREMENTS = {
+    "requirements": {
+        "functional": [
+            "Multi-tenant B2B SaaS: each organization has isolated data and config",
+            "SSO via SAML/OIDC; optional email/password fallback per tenant",
+            "Role-based access: org admin, project manager, developer, viewer",
+            "Project management: projects, milestones, tasks, file attachments",
+            "Audit log: who did what and when, exportable for compliance",
+            "REST and GraphQL APIs; webhooks for external integrations",
+            "Real-time notifications (in-app and optional email) for assignments and deadlines",
+        ],
+        "non_functional": [
+            "Target 10k concurrent users; 99.9% uptime SLA",
+            "P95 API latency < 150ms; bulk exports may run async",
+            "EU and US data residency options; encryption at rest and in transit",
+            "Must run on Kubernetes; support horizontal scaling of API and workers",
+        ],
+        "constraints": [
+            "Backend must be Python or Node.js",
+            "Prefer managed services for DB and queues where possible",
+        ],
+        "user_stories": [
+            {
+                "role": "Org Admin",
+                "goal": "Configure SSO and manage org members",
+                "reason": "Security and onboarding",
+            },
+            {
+                "role": "Project Manager",
+                "goal": "Create projects and assign tasks with due dates",
+                "reason": "Planning",
+            },
+        ],
+    }
+}
+
+# Run mode:
+# - simple: run main() + selective regeneration test
+# - complex: run complex scenario only
+# - both: run all tests (default)
+RUN_MODE = (sys.argv[1] if len(sys.argv) > 1 else "both").lower()
+if RUN_MODE not in ("simple", "complex", "both"):
+    RUN_MODE = "both"
+
 
 class MockPersistenceAdapter:
     """In-memory mock for StateManager's persistence layer."""
@@ -55,22 +118,7 @@ async def main():
     )
 
     # Sample requirements for testing
-    test_input = {
-        "requirements": {
-            "functional": [
-                "User authentication with email and password",
-                "Dashboard showing user activity",
-                "REST API for mobile clients",
-            ],
-            "non_functional": [
-                "Must handle 500 concurrent users",
-                "Response time under 200ms for API calls",
-            ],
-            "constraints": [
-                "Must use Python for backend",
-            ],
-        }
-    }
+    test_input = SIMPLE_REQUIREMENTS
 
     print("\n📋 Input Requirements:")
     print(f"   Functional: {len(test_input['requirements']['functional'])} items")
@@ -210,10 +258,56 @@ async def test_selective_regeneration():
     print("=" * 60)
 
 
+async def test_complex_requirements_case():
+    """Test architect generation on a larger B2B scenario (friend's test case)."""
+    print("\n" + "=" * 60)
+    print("Complex Requirements Test")
+    print("=" * 60)
+
+    llm = GeminiClient(model="gemini-2.5-flash")
+
+    from src.state.state_manager import StateManager
+    persistence = MockPersistenceAdapter()
+    state_manager = StateManager(persistence_adapter=persistence)
+
+    agent = ProjectArchitectAgent(
+        state_manager=state_manager,
+        llm_client=llm,
+    )
+
+    req = COMPLEX_REQUIREMENTS["requirements"]
+    print("\nInput Requirements:")
+    print(f"   Functional: {len(req.get('functional', []))} items")
+    print(f"   Non-Functional: {len(req.get('non_functional', []))} items")
+    print(f"   Constraints: {len(req.get('constraints', []))} items")
+    print(f"   User stories: {len(req.get('user_stories', []))} items")
+
+    result = await agent.process(COMPLEX_REQUIREMENTS)
+    arch = result.get("architecture", {})
+
+    print("\nOutput Summary:")
+    print(f"   Backend: {arch.get('tech_stack', {}).get('backend', 'N/A')}")
+    print(f"   System Diagram: {'generated' if arch.get('system_diagram') else 'missing'}")
+    print(f"   ERD: {'generated' if arch.get('data_schema') else 'missing'}")
+    print(f"   Deployment: {arch.get('deployment_strategy', 'N/A')}")
+
+    print("\n" + "=" * 60)
+    print("Complex requirements test completed.")
+    print("=" * 60)
+
+
 async def run_all_tests():
     """Run all integration tests."""
-    await main()
-    await test_selective_regeneration()
+    print(f"Run mode: {RUN_MODE}")
+    if RUN_MODE == "simple":
+        await main()
+        await test_selective_regeneration()
+    elif RUN_MODE == "complex":
+        await test_complex_requirements_case()
+    else:
+        await main()
+        await test_selective_regeneration()
+        await test_complex_requirements_case()
 
 
 if __name__ == "__main__":
