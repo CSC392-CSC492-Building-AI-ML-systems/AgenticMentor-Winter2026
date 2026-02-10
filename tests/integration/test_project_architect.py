@@ -162,6 +162,9 @@ async def test_selective_regeneration():
     print(f"   System Diagram: {'✓ generated' if arch1.get('system_diagram') else '✗ missing'}")
     print(f"   ERD: {'✓ generated' if arch1.get('data_schema') else '✗ missing'}")
 
+    print("\nWaiting 4 minutes to avoid free-tier API rate limits...")
+    await asyncio.sleep(240)
+
     # Step 2: Selective regeneration - only ERD
     print("\n🔄 Step 2: Selective regeneration (ERD only)...")
     print('   User request: "Please regenerate only the ERD diagram"')

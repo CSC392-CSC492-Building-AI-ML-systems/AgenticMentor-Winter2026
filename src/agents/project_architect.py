@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Annotated
 from operator import add
 
@@ -198,6 +199,11 @@ class ProjectArchitectAgent(BaseAgent):
                 )
             }
 
+        # Deterministic rules for explicit user requests (avoids LLM misclassification)
+        deterministic_plan = self._deterministic_regen_plan(user_request)
+        if deterministic_plan is not None:
+            return {"regen_plan": deterministic_plan}
+
         # Use LLM to analyze semantic impact
         if self.llm_client is None:
             # No LLM, regenerate everything
@@ -264,11 +270,18 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             return {"tech_stack": existing.get("tech_stack", {})}
 
         # Generate new tech stack
-        requirements = state.get("requirements", {})
+        requirements = dict(state.get("requirements", {}))
         constraints = requirements.get("constraints", [])
+        user_request = state.get("user_request")
+        effective_constraints = self._reconcile_constraints_with_user_request(
+            constraints, user_request
+        )
+        requirements["constraints"] = effective_constraints
         
-        tech_stack = await self._generate_tech_stack(requirements, constraints)
-        return {"tech_stack": tech_stack}
+        tech_stack = await self._generate_tech_stack(
+            requirements, effective_constraints, user_request=user_request
+        )
+        return {"tech_stack": tech_stack, "requirements": requirements}
 
     async def _system_diagram_node(self, state: ArchitectState) -> dict:
         """Generate or preserve system diagram."""
@@ -328,7 +341,10 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
     # ========================================================================
 
     async def _generate_tech_stack(
-        self, requirements: Dict[str, Any], constraints: List[str]
+        self,
+        requirements: Dict[str, Any],
+        constraints: List[str],
+        user_request: Optional[str] = None,
     ) -> Dict[str, str]:
         """Generate tech stack via LLM with fallback."""
         
@@ -338,10 +354,13 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         prompt = (
             "You are a Senior Software Architect. Analyze the requirements and output "
             "a JSON object with keys: frontend, backend, database, devops. "
-            "Constraints must be respected.\n\n"
+            "Use the latest user request as highest-priority intent. "
+            "If older constraints conflict with the latest user request, follow the latest user request.\n\n"
             f"Requirements: {json.dumps(requirements, ensure_ascii=True)}\n"
             f"Constraints: {json.dumps(constraints, ensure_ascii=True)}"
         )
+        if user_request:
+            prompt += f"\nLatest user request: {user_request}"
 
         try:
             if hasattr(self.llm_client, "with_structured_output"):
@@ -494,6 +513,160 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             "database": "PostgreSQL",
             "devops": "Docker + GitHub Actions",
         }
+
+    def _deterministic_regen_plan(self, user_request: str) -> Optional[RegenPlan]:
+        """Return a deterministic regeneration plan for explicit requests."""
+        text = user_request.lower()
+        all_artifacts = ["tech_stack", "system_diagram", "data_schema", "deployment_strategy"]
+
+        def plan(artifacts: List[str], reason: str) -> RegenPlan:
+            preserve = [a for a in all_artifacts if a not in artifacts]
+            return RegenPlan(
+                artifacts_to_regenerate=artifacts,
+                reasoning=reason,
+                preserve_artifacts=preserve,
+            )
+
+        if any(phrase in text for phrase in ("regenerate everything", "redo everything", "rebuild everything")):
+            return plan(all_artifacts, "User explicitly requested full regeneration")
+
+        only_requested = any(token in text for token in ("only", "just"))
+        if only_requested and any(token in text for token in ("erd", "data schema", "database schema")):
+            return plan(["data_schema"], "User explicitly requested ERD/data schema only")
+        if only_requested and any(token in text for token in ("system diagram", "context diagram", "architecture diagram")):
+            return plan(["system_diagram"], "User explicitly requested system diagram only")
+        if only_requested and any(token in text for token in ("tech stack", "stack")):
+            return plan(["tech_stack"], "User explicitly requested tech stack only")
+        if only_requested and "deployment" in text:
+            return plan(["deployment_strategy"], "User explicitly requested deployment strategy only")
+
+        if "database" in text and any(token in text for token in ("change", "switch", "migrate", "use", "to ")):
+            return plan(
+                ["tech_stack", "data_schema", "deployment_strategy"],
+                "Database change impacts stack, schema, and deployment strategy",
+            )
+        if "backend" in text and any(token in text for token in ("change", "switch", "migrate", "use", "to ")):
+            return plan(
+                ["tech_stack", "deployment_strategy"],
+                "Backend change impacts stack and deployment strategy",
+            )
+        if "frontend" in text and any(token in text for token in ("change", "switch", "migrate", "use", "to ")):
+            return plan(
+                ["tech_stack", "deployment_strategy"],
+                "Frontend change impacts stack and deployment strategy",
+            )
+
+        return None
+
+    def _reconcile_constraints_with_user_request(
+        self, constraints: List[str], user_request: Optional[str]
+    ) -> List[str]:
+        """
+        Reconcile older constraints with the latest user request.
+        If they conflict, latest user request wins.
+        """
+        if not user_request:
+            return list(constraints)
+
+        text = user_request.lower()
+        updated = list(constraints)
+
+        backend_target = self._extract_target_value(
+            text,
+            ["backend"],
+            {
+                "python": "Python",
+                "node.js": "Node.js",
+                "node": "Node.js",
+                "express": "Node.js (Express)",
+                "fastapi": "Python (FastAPI)",
+                "django": "Python (Django)",
+                "flask": "Python (Flask)",
+                "java": "Java",
+                "spring": "Java (Spring)",
+            },
+        )
+        if backend_target is not None:
+            updated = [
+                c for c in updated
+                if not self._constraint_mentions_any(
+                    c,
+                    [
+                        "backend", "python", "fastapi", "django", "flask", "node",
+                        "express", "java", "spring", "nestjs", ".net", "dotnet",
+                    ],
+                )
+            ]
+            updated.append(f"Must use {backend_target} for backend")
+
+        database_target = self._extract_target_value(
+            text,
+            ["database", "db"],
+            {
+                "postgresql": "PostgreSQL",
+                "postgres": "PostgreSQL",
+                "mysql": "MySQL",
+                "mongodb": "MongoDB",
+                "mongo": "MongoDB",
+                "sqlite": "SQLite",
+                "redis": "Redis",
+            },
+        )
+        if database_target is not None:
+            updated = [
+                c for c in updated
+                if not self._constraint_mentions_any(
+                    c,
+                    ["database", "db", "postgres", "mysql", "mongo", "sqlite", "redis"],
+                )
+            ]
+            updated.append(f"Must use {database_target} for database")
+
+        frontend_target = self._extract_target_value(
+            text,
+            ["frontend"],
+            {
+                "react": "React",
+                "next.js": "Next.js",
+                "next": "Next.js",
+                "vue": "Vue",
+                "angular": "Angular",
+                "svelte": "Svelte",
+            },
+        )
+        if frontend_target is not None:
+            updated = [
+                c for c in updated
+                if not self._constraint_mentions_any(
+                    c,
+                    ["frontend", "react", "next", "vue", "angular", "svelte"],
+                )
+            ]
+            updated.append(f"Must use {frontend_target} for frontend")
+
+        return updated
+
+    def _extract_target_value(
+        self,
+        request_text: str,
+        domain_tokens: List[str],
+        candidate_map: Dict[str, str],
+    ) -> Optional[str]:
+        """Extract an explicit target technology for a domain from a request string."""
+        if not any(token in request_text for token in domain_tokens):
+            return None
+        if not any(token in request_text for token in ("change", "switch", "migrate", "use", "to ")):
+            return None
+
+        for key, value in candidate_map.items():
+            pattern = r"\b" + re.escape(key) + r"\b"
+            if re.search(pattern, request_text):
+                return value
+        return None
+
+    def _constraint_mentions_any(self, constraint: str, keywords: List[str]) -> bool:
+        text = constraint.lower()
+        return any(keyword in text for keyword in keywords)
 
     # ========================================================================
     # Review Protocol
