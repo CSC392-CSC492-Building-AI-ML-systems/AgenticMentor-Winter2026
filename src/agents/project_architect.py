@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Annotated
 from operator import add
 
@@ -12,8 +13,10 @@ from langgraph.graph import StateGraph, END
 
 from src.agents.base_agent import BaseAgent
 from src.protocols.review_protocol import ReviewResult
+from src.protocols.schemas import MermaidLLMResponse
 from src.state.project_state import ArchitectureDefinition, ProjectState
 from src.tools.diagram_generator import DiagramGenerator
+from src.utils.mermaid_validator import validate_mermaid
 from src.utils.token_optimizer import ContextExtractor
 
 
@@ -68,6 +71,7 @@ class ArchitectState(TypedDict, total=False):
     
     # Generated/preserved outputs
     tech_stack: Optional[dict]
+    tech_stack_rationale: Optional[str]
     system_diagram: Optional[str]
     data_schema: Optional[str]
     api_design: Optional[list]
@@ -102,6 +106,7 @@ class ProjectArchitectAgent(BaseAgent):
         self.diagram_gen = DiagramGenerator()
         self.context_extractor = ContextExtractor()
         self._graph = self._build_graph()
+        self._mermaid_store: Any = None  # lazy-loaded for RAG snippets
 
     # ========================================================================
     # Main Entry Point
@@ -135,11 +140,14 @@ class ProjectArchitectAgent(BaseAgent):
             )
 
         # Run the LangGraph workflow
+        print("  [1/4] Analyzing impact and generating tech stack...", flush=True)
         final_state = await self._graph.ainvoke(initial_state)
+        print("  [4/4] Building architecture output...", flush=True)
 
         # Build ArchitectureDefinition from final state
         architecture = ArchitectureDefinition(
             tech_stack=final_state.get("tech_stack") or {},
+            tech_stack_rationale=final_state.get("tech_stack_rationale"),
             data_schema=final_state.get("data_schema"),
             system_diagram=final_state.get("system_diagram"),
             api_design=final_state.get("api_design") or [],
@@ -150,7 +158,9 @@ class ProjectArchitectAgent(BaseAgent):
         return {
             "summary": self._architecture_summary(architecture_dict),
             "architecture": architecture_dict,
-            "state_delta": {"architecture": architecture_dict},
+            "state_delta": {
+                "architecture": architecture_dict,
+            },
         }
 
     # ========================================================================
@@ -267,7 +277,10 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
 
         # Check if we should preserve
         if regen_plan and "tech_stack" not in regen_plan.artifacts_to_regenerate:
-            return {"tech_stack": existing.get("tech_stack", {})}
+            return {
+                "tech_stack": existing.get("tech_stack", {}),
+                "tech_stack_rationale": existing.get("tech_stack_rationale"),
+            }
 
         # Generate new tech stack
         requirements = dict(state.get("requirements", {}))
@@ -278,10 +291,13 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         )
         requirements["constraints"] = effective_constraints
         
-        tech_stack = await self._generate_tech_stack(
+        tech_stack, rationale = await self._generate_tech_stack(
             requirements, effective_constraints, user_request=user_request
         )
-        return {"tech_stack": tech_stack, "requirements": requirements}
+        return {
+            "tech_stack": tech_stack,
+            "tech_stack_rationale": rationale,
+        }
 
     async def _system_diagram_node(self, state: ArchitectState) -> dict:
         """Generate or preserve system diagram."""
@@ -294,6 +310,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             return {"system_diagram": existing.get("system_diagram")}
 
         # Generate new system diagram
+        print("  [2/4] Generating system diagram (LLM)...", flush=True)
         diagram = await self._generate_mermaid_diagram(
             diagram_kind="system",
             requirements_text=state.get("requirements_text", ""),
@@ -312,6 +329,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             return {"data_schema": existing.get("data_schema")}
 
         # Generate new ERD
+        print("  [3/4] Generating ERD diagram (LLM)...", flush=True)
         diagram = await self._generate_mermaid_diagram(
             diagram_kind="erd",
             requirements_text=state.get("requirements_text", ""),
@@ -345,15 +363,19 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         requirements: Dict[str, Any],
         constraints: List[str],
         user_request: Optional[str] = None,
-    ) -> Dict[str, str]:
-        """Generate tech stack via LLM with fallback."""
+    ) -> tuple[Dict[str, str], Optional[str]]:
+        """Generate tech stack via LLM with fallback. Returns (stack_dict, rationale)."""
         
         if self.llm_client is None:
-            return self._default_tech_stack(constraints)
+            return self._default_tech_stack(constraints), None
 
         prompt = (
-            "You are a Senior Software Architect. Analyze the requirements and output "
-            "a JSON object with keys: frontend, backend, database, devops. "
+            "You are a Senior Software Architect. Analyze the requirements and choose a concrete tech stack. "
+            "Output strict JSON with these keys: frontend, backend, database, devops, explanation. "
+            "frontend, backend, database, devops: each must be a single string (e.g. 'React 18 + TypeScript', 'FastAPI (Python 3.11)', 'PostgreSQL 15', 'Docker + GitHub Actions'). "
+            "explanation: a short paragraph (2-4 sentences) explaining why you chose this stack and how it fits the requirements and constraints. "
+            "Respect all constraints. Consider non-functional requirements (scale, latency, mobile vs web) when choosing. "
+            "Prefer specific, production-ready choices over vague ones like 'Python' or 'React'. "
             "Use the latest user request as highest-priority intent. "
             "If older constraints conflict with the latest user request, follow the latest user request.\n\n"
             f"Requirements: {json.dumps(requirements, ensure_ascii=True)}\n"
@@ -363,15 +385,45 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             prompt += f"\nLatest user request: {user_request}"
 
         try:
-            if hasattr(self.llm_client, "with_structured_output"):
-                structured_llm = self.llm_client.with_structured_output(TechStackOutput)
-                result = await structured_llm.ainvoke(prompt)
-                return result.model_dump()
-            else:
-                response = await self._invoke_llm(prompt)
-                return self._parse_tech_stack(response) or self._default_tech_stack(constraints)
+            response = await self._invoke_llm(prompt)
+            text = response.strip()
+
+            # Extract JSON from markdown code blocks if present
+            text = self._extract_json_from_response(text)
+
+            parsed = json.loads(text)
+            required = {"frontend", "backend", "database", "devops"}
+            if not isinstance(parsed, dict) or not required.issubset(parsed.keys()):
+                return self._default_tech_stack(constraints), None
+
+            # Handle nested structures: extract string from nested dicts/lists
+            result: Dict[str, str] = {}
+            for key in required:
+                value = parsed[key]
+                if isinstance(value, str):
+                    result[key] = value
+                elif isinstance(value, dict):
+                    if "technologies" in value and isinstance(value["technologies"], list) and value["technologies"]:
+                        result[key] = str(value["technologies"][0])
+                    elif "name" in value:
+                        result[key] = str(value["name"])
+                    else:
+                        result[key] = str(list(value.values())[0]) if value else "Unknown"
+                elif isinstance(value, list) and value:
+                    result[key] = str(value[0])
+                else:
+                    result[key] = str(value)
+
+            # Extract rationale/explanation
+            explanation = None
+            for key in ("explanation", "rationale", "reasoning"):
+                if key in parsed and isinstance(parsed[key], str) and parsed[key].strip():
+                    explanation = parsed[key].strip()
+                    break
+            return result, explanation
+
         except Exception:
-            return self._default_tech_stack(constraints)
+            return self._default_tech_stack(constraints), None
 
     async def _generate_mermaid_diagram(
         self,
@@ -379,7 +431,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         requirements_text: str,
         app_type: str,
     ) -> str:
-        """Generate Mermaid diagram via LLM with fallback."""
+        """Generate Mermaid diagram via LLM with RAG, validation, retry, and fallback."""
         
         participants = ["User", "Frontend", "API", "Database"]
         
@@ -394,38 +446,106 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         if self.llm_client is None:
             return fallback_diagram
 
+        # Fetch RAG snippets for better diagram generation
+        rag_snippets = self._get_mermaid_rag_snippets(diagram_kind)
+        if rag_snippets:
+            print(f"  [diagram] Using mermaid RAG snippets for {diagram_kind} ({len(rag_snippets)} chars)", flush=True)
+        rag_block = (
+            f"Relevant Mermaid syntax (from docs):\n{rag_snippets}\n\n"
+            if rag_snippets else ""
+        )
+
         if diagram_kind == "erd":
             prompt = (
-                "You are a software architect. Generate a Mermaid.js ERD diagram.\n"
-                "Output ONLY the raw Mermaid code starting with 'erDiagram'.\n"
-                "Do NOT include markdown fences.\n\n"
+                "You are a software architect. Output strict JSON only with keys: "
+                'diagram_type and mermaid_code. diagram_type must be "erd". '
+                "mermaid_code must be raw Mermaid.js code that starts with erDiagram "
+                "and must not include markdown fences. "
+                "Include every entity and relationship implied by the requirements (e.g. users, sessions, core domain entities, audit/log tables). "
+                "Use proper Mermaid erDiagram syntax: entity blocks with attributes and relationship lines (||--o{, }o--||, etc.).\n\n"
+                f"{rag_block}"
                 f"Requirements: {requirements_text}"
             )
         else:
             prompt = (
-                "You are a software architect. Generate a Mermaid.js system context diagram.\n"
-                "Output ONLY the raw Mermaid code starting with 'flowchart' or 'graph'.\n"
-                "Do NOT include markdown fences.\n\n"
+                "You are a software architect. Output strict JSON only with keys: "
+                'diagram_type and mermaid_code. diagram_type must be "system". '
+                "mermaid_code must be raw Mermaid.js flowchart code that starts with "
+                "'graph TD' or 'flowchart TD' and must not include markdown fences. "
+                "CRITICAL Mermaid syntax rules:\n"
+                "1. Edge labels: use pipe syntax only, e.g. A -->|label text| B. Do NOT put parentheses inside edge labels (e.g. use 'email and password' not '(email/password)'); parentheses in edge labels cause parse errors.\n"
+                "2. Node labels that contain parentheses or commas MUST be in double quotes inside brackets, e.g. N[\"Frontend (Web UI)\"] or N[\"Cache (e.g. Redis)\"]. Unquoted [Frontend (Web UI)] causes parse errors.\n"
+                "3. Use simple node IDs (letters, no spaces) then the label: ID[Label] or ID[\"Label with (parens)\"].\n"
+                "Show the main components and label edges with the main flows. Reflect the actual requirements.\n\n"
+                f"{rag_block}"
                 f"Application Type: {app_type}\n"
                 f"Participants: {', '.join(participants)}\n"
                 f"Requirements: {requirements_text}"
             )
 
-        try:
-            if hasattr(self.llm_client, "with_structured_output"):
-                structured_llm = self.llm_client.with_structured_output(MermaidDiagramOutput)
-                result = await structured_llm.ainvoke(prompt)
-                mermaid = result.mermaid_code.strip()
-            else:
+        max_diagram_attempts = 2  # initial + one retry with real error message
+        last_parse_error = ""
+        for attempt in range(max_diagram_attempts):
+            if attempt > 0:
+                print(f"  [diagram] Retry {attempt + 1}/{max_diagram_attempts} for {diagram_kind} (validation failed)...", flush=True)
+                # Query RAG with the error message to get error-relevant syntax chunks
+                retry_rag = ""
+                if last_parse_error:
+                    retry_rag = self._get_mermaid_rag_snippets(
+                        diagram_kind, max_chars=1000, query_override=last_parse_error
+                    )
+                    if retry_rag:
+                        print(f"  [diagram] Using error-based RAG for retry ({len(retry_rag)} chars)", flush=True)
+                retry_rag_block = (
+                    f"Relevant Mermaid syntax (for this error):\n{retry_rag}\n\n"
+                    if retry_rag else ""
+                )
+                correction = (
+                    "Your previous Mermaid code had syntax errors. "
+                    "Fix the diagram and output valid Mermaid only (JSON with diagram_type and mermaid_code). "
+                )
+                if last_parse_error:
+                    correction += f"Parse error from validator:\n{last_parse_error}\n\n"
+                correction = retry_rag_block + correction
+                correction += (
+                    "Rules: (1) edge labels use -->|label| only; no parentheses in edge labels. "
+                    "(2) node labels with parentheses must be quoted: N[\"Label (detail)\"].\n\n"
+                    f"Requirements: {requirements_text[:1500]}"
+                )
+                if diagram_kind == "erd":
+                    prompt = (
+                        "Output strict JSON with keys diagram_type and mermaid_code. diagram_type must be \"erd\". "
+                        "mermaid_code must be valid erDiagram code.\n\n" + correction
+                    )
+                else:
+                    prompt = (
+                        "Output strict JSON with keys diagram_type and mermaid_code. diagram_type must be \"system\". "
+                        "mermaid_code must be valid graph TD or flowchart TD. " + correction
+                    )
+
+            try:
                 response = await self._invoke_llm(prompt)
-                mermaid = self._extract_mermaid_code(response)
+                mermaid = self._extract_mermaid_from_structured_response(
+                    raw_text=response,
+                    expected_diagram_kind=diagram_kind,
+                )
+                if diagram_kind == "system" and mermaid:
+                    mermaid = self._sanitize_mermaid_flowchart(mermaid)
+                if not self._is_valid_mermaid(mermaid):
+                    last_parse_error = "Diagram did not start with valid keyword (flowchart/graph/erDiagram/...)."
+                    continue
+                # Compile with mmdc and get real parse errors for retry
+                if attempt == 0:
+                    print(f"  [diagram] Validating {diagram_kind} (mmdc)...", flush=True)
+                valid, parse_error = validate_mermaid(mermaid)
+                if valid:
+                    return mermaid
+                last_parse_error = parse_error or "Mermaid syntax error."
+                continue
+            except Exception:
+                continue
 
-            if self._is_valid_mermaid(mermaid):
-                return mermaid
-            return fallback_diagram
-
-        except Exception:
-            return fallback_diagram
+        return fallback_diagram
 
     async def _invoke_llm(self, prompt: str) -> str:
         """Invoke LLM with various client interfaces."""
@@ -502,6 +622,126 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             if idx != -1:
                 return text[idx:].strip()
         return text
+
+    def _get_mermaid_store(self) -> Any:
+        """Lazy-load mermaid vector store (same embedder as ingest). Returns None if unavailable."""
+        if self._mermaid_store is not None:
+            return self._mermaid_store
+        try:
+            from sentence_transformers import SentenceTransformer
+            from src.tools.vector_store import VectorStore
+            project_root = Path(__file__).resolve().parents[2]
+            persist_dir = project_root / "data" / "vector_stores"
+            if not (persist_dir / "mermaid.index").is_file():
+                return None
+            embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            self._mermaid_store = VectorStore(
+                store_name="mermaid",
+                persist_dir=persist_dir,
+                embedder=embedder,
+            )
+            if len(self._mermaid_store) == 0:
+                self._mermaid_store = None
+            return self._mermaid_store
+        except Exception:
+            return None
+
+    def _get_mermaid_rag_snippets(
+        self,
+        diagram_kind: str,
+        max_chars: int = 1500,
+        query_override: str | None = None,
+    ) -> str:
+        """Return concatenated RAG snippets for the diagram type, or empty string if unavailable.
+        When query_override is set (e.g. validator error message), use it to retrieve error-relevant chunks."""
+        store = self._get_mermaid_store()
+        if store is None:
+            return ""
+        try:
+            if query_override and query_override.strip():
+                query = query_override.strip()[:300]  # cap so query is not huge
+            elif diagram_kind == "erd":
+                query = "erDiagram entities relationships attributes"
+            else:
+                query = "flowchart TD graph nodes edges labels"
+            if diagram_kind == "erd":
+                pairs = store.query_text_with_metadata(
+                    query,
+                    k=3,
+                    meta_filter={"diagram_type": "erd"},
+                )
+            else:
+                pairs = store.query_text_with_metadata(
+                    query,
+                    k=3,
+                    meta_filter={"diagram_type": "flowchart"},
+                )
+            if not pairs:
+                return ""
+            out: List[str] = []
+            total = 0
+            for text, _ in pairs:
+                if total + len(text) > max_chars:
+                    out.append(text[: max_chars - total].strip())
+                    break
+                out.append(text.strip())
+                total += len(text)
+            return "\n\n---\n\n".join(out) if out else ""
+        except Exception:
+            return ""
+
+    def _sanitize_mermaid_flowchart(self, code: str) -> str:
+        """Fix common Mermaid flowchart parse errors: unquoted node labels with ( ), and parentheses in edge labels."""
+        if not code or "graph" not in code.lower():
+            return code
+
+        # 1. Node labels: [Text (with) parens] -> ["Text (with) parens"] so ( ) are not parsed as shape syntax
+        def _quote_node_label(m: re.Match) -> str:
+            content = m.group(1)
+            if "(" in content and not content.strip().startswith('"'):
+                # Escape any double quotes in content
+                escaped = content.replace("\\", "\\\\").replace('"', '\\"')
+                return f'["{escaped}"]'
+            return m.group(0)
+
+        code = re.sub(r"\[(?!\")([^\[\]]+)\]", _quote_node_label, code)
+
+        # 2. Edge labels: -->|label (with) parens| -> -->|label with parens| (remove parentheses; they break parsing)
+        def _strip_edge_parens(m: re.Match) -> str:
+            prefix, label = m.group(1), m.group(2)
+            label = re.sub(r"\(([^)]*)\)", r"\1", label)  # (x) -> x
+            label = re.sub(r"\s+", " ", label).strip()  # collapse spaces
+            return f"{prefix}|{label}|"
+        code = re.sub(r"(-->|---)\|(.*?)\|", _strip_edge_parens, code)
+
+        return code
+
+    def _extract_mermaid_from_structured_response(
+        self, raw_text: str, expected_diagram_kind: str
+    ) -> str:
+        """Parse MermaidLLMResponse from LLM JSON output."""
+        text = raw_text.strip()
+
+        # Extract JSON from markdown code blocks if present
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end].strip()
+
+        try:
+            parsed = MermaidLLMResponse.model_validate_json(text)
+        except Exception:
+            return ""
+
+        if parsed.diagram_type != expected_diagram_kind:
+            return ""
+        return parsed.mermaid_code.strip()
 
     def _default_tech_stack(self, constraints: List[str]) -> Dict[str, str]:
         """Generate default tech stack based on constraints."""
@@ -807,13 +1047,17 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
 
     def _architecture_summary(self, architecture: Dict[str, Any]) -> str:
         tech = architecture.get("tech_stack", {})
-        return (
+        summary = (
             "Selected stack: "
             f"Frontend={tech.get('frontend', 'N/A')}, "
             f"Backend={tech.get('backend', 'N/A')}, "
             f"Database={tech.get('database', 'N/A')}, "
             f"DevOps={tech.get('devops', 'N/A')}."
         )
+        rationale = architecture.get("tech_stack_rationale")
+        if rationale and isinstance(rationale, str) and rationale.strip():
+            summary += "\n\nRationale: " + rationale.strip()
+        return summary
 
     def _is_valid_mermaid(self, diagram_code: Any) -> bool:
         if not isinstance(diagram_code, str) or not diagram_code.strip():

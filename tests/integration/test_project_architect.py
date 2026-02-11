@@ -1,7 +1,9 @@
 """Integration test for ProjectArchitectAgent with live Gemini API."""
 
 import asyncio
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Load environment variables from .env (checks project root and parent)
@@ -20,6 +22,9 @@ if str(project_root) not in sys.path:
 
 from src.adapters.llm_clients import GeminiClient
 from src.agents.project_architect import ProjectArchitectAgent
+
+# Output file for structured test results
+OUTPUT_FILE = Path(__file__).resolve().parent / "test_output.txt"
 
 # Simple scenario used by the base integration test
 SIMPLE_REQUIREMENTS = {
@@ -85,6 +90,85 @@ if RUN_MODE not in ("simple", "complex", "both"):
     RUN_MODE = "both"
 
 
+# ============================================================================
+# Test Report Writer
+# ============================================================================
+
+class TestReport:
+    """Writes structured test output to both console and a text file."""
+
+    def __init__(self, filepath: Path):
+        self._filepath = filepath
+        self._file = None
+        self._results: list[dict] = []
+
+    def open(self):
+        self._file = open(self._filepath, "w", encoding="utf-8")
+        header = (
+            f"{'=' * 70}\n"
+            f"  ProjectArchitectAgent — Integration Test Report\n"
+            f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"  Run mode:  {RUN_MODE}\n"
+            f"{'=' * 70}\n"
+        )
+        self._write(header)
+
+    def close(self):
+        # Write summary section
+        self._write(f"\n{'=' * 70}")
+        self._write("  SUMMARY")
+        self._write(f"{'=' * 70}\n")
+        for r in self._results:
+            status = "PASS" if r["passed"] else "FAIL"
+            self._write(f"  [{status}] {r['name']}")
+            if r.get("details"):
+                for line in r["details"]:
+                    self._write(f"         {line}")
+        passed = sum(1 for r in self._results if r["passed"])
+        total = len(self._results)
+        self._write(f"\n  Result: {passed}/{total} tests passed.\n")
+        if self._file:
+            self._file.close()
+            self._file = None
+
+    def section(self, title: str):
+        """Write a section header."""
+        self._write(f"\n{'─' * 70}")
+        self._write(f"  {title}")
+        self._write(f"{'─' * 70}\n")
+
+    def line(self, text: str = ""):
+        """Write a line to both console and file."""
+        self._write(text)
+
+    def kv(self, key: str, value: str):
+        """Write a key-value pair."""
+        self._write(f"  {key}: {value}")
+
+    def block(self, label: str, content: str):
+        """Write a labeled multi-line block (e.g. a full diagram)."""
+        self._write(f"\n  ── {label} ──")
+        for ln in (content or "(empty)").splitlines():
+            self._write(f"  {ln}")
+        self._write("")
+
+    def record_result(self, name: str, passed: bool, details: list[str] | None = None):
+        """Record a test result for the summary."""
+        self._results.append({"name": name, "passed": passed, "details": details or []})
+
+    def _write(self, text: str):
+        print(text)
+        if self._file:
+            self._file.write(text + "\n")
+
+
+report = TestReport(OUTPUT_FILE)
+
+
+# ============================================================================
+# Mock
+# ============================================================================
+
 class MockPersistenceAdapter:
     """In-memory mock for StateManager's persistence layer."""
 
@@ -98,216 +182,224 @@ class MockPersistenceAdapter:
         self._store[session_id] = data
 
 
-async def main():
-    print("=" * 60)
-    print("ProjectArchitectAgent Integration Test")
-    print("=" * 60)
-
-    # Initialize components
-    llm = GeminiClient(model="gemini-2.5-flash")  # Use flash for faster/cheaper testing
-    
-    # Create a minimal state manager with mock persistence
+def _make_agent():
+    """Create agent + state manager for a test."""
     from src.state.state_manager import StateManager
+
+    llm = GeminiClient(model="gemini-2.5-flash")
     persistence = MockPersistenceAdapter()
     state_manager = StateManager(persistence_adapter=persistence)
+    return ProjectArchitectAgent(state_manager=state_manager, llm_client=llm)
 
-    # Instantiate the architect agent
-    agent = ProjectArchitectAgent(
-        state_manager=state_manager,
-        llm_client=llm,
-    )
 
-    # Sample requirements for testing
-    test_input = SIMPLE_REQUIREMENTS
+def _write_architecture(arch: dict):
+    """Dump full architecture output to the report."""
+    ts = arch.get("tech_stack", {})
+    report.kv("Frontend", ts.get("frontend", "N/A"))
+    report.kv("Backend", ts.get("backend", "N/A"))
+    report.kv("Database", ts.get("database", "N/A"))
+    report.kv("DevOps", ts.get("devops", "N/A"))
 
-    print("\n📋 Input Requirements:")
-    print(f"   Functional: {len(test_input['requirements']['functional'])} items")
-    print(f"   Non-Functional: {len(test_input['requirements']['non_functional'])} items")
-    print(f"   Constraints: {len(test_input['requirements']['constraints'])} items")
+    rationale = arch.get("tech_stack_rationale")
+    if rationale:
+        report.block("Tech Stack Rationale", rationale)
 
-    print("\n🔄 Running ProjectArchitectAgent.process()...")
-    print("-" * 60)
+    if arch.get("system_diagram"):
+        report.block("System Diagram (Mermaid)", arch["system_diagram"])
+    else:
+        report.kv("System Diagram", "MISSING")
+
+    if arch.get("data_schema"):
+        report.block("ERD Diagram (Mermaid)", arch["data_schema"])
+    else:
+        report.kv("ERD Diagram", "MISSING")
+
+    report.kv("Deployment", arch.get("deployment_strategy", "N/A"))
+
+
+# ============================================================================
+# Tests
+# ============================================================================
+
+async def main():
+    report.section("TEST 1: Simple Requirements — Full Generation")
+
+    req = SIMPLE_REQUIREMENTS["requirements"]
+    report.kv("Functional requirements", str(len(req["functional"])))
+    report.kv("Non-functional requirements", str(len(req["non_functional"])))
+    report.kv("Constraints", str(len(req["constraints"])))
+    report.line()
+
+    agent = _make_agent()
 
     try:
-        result = await agent.process(test_input)
+        result = await agent.process(SIMPLE_REQUIREMENTS)
+        arch = result.get("state_delta", {}).get("architecture", result.get("architecture", {}))
 
-        print("\n✅ Agent completed successfully!")
-        print("-" * 60)
+        _write_architecture(arch)
 
-        # Display results
-        if "state_delta" in result:
-            delta = result["state_delta"]
-            
-            if "architecture" in delta:
-                arch = delta["architecture"]
-                print("\n📐 Architecture Output:")
-                
-                if "tech_stack" in arch:
-                    print("\n   Tech Stack:")
-                    for key, value in arch.get("tech_stack", {}).items():
-                        print(f"      {key}: {value}")
-                
-                if "diagrams" in arch:
-                    print("\n   Diagrams Generated:")
-                    for diagram_type, code in arch.get("diagrams", {}).items():
-                        preview = code[:80] + "..." if len(str(code)) > 80 else code
-                        print(f"      {diagram_type}: {preview}")
-                
-                # Show actual diagram fields (system_diagram and data_schema)
-                if "system_diagram" in arch:
-                    diagram = arch["system_diagram"]
-                    print(f"\n   System Diagram (first 150 chars):")
-                    print(f"      {diagram[:150]}..." if len(diagram) > 150 else f"      {diagram}")
-                
-                if "data_schema" in arch:
-                    diagram = arch["data_schema"]
-                    print(f"\n   ERD Diagram (first 150 chars):")
-                    print(f"      {diagram[:150]}..." if len(diagram) > 150 else f"      {diagram}")
-                
-                if "deployment_strategy" in arch:
-                    print(f"\n   Deployment: {arch.get('deployment_strategy')}")
+        has_stack = bool(arch.get("tech_stack"))
+        has_sys = bool(arch.get("system_diagram"))
+        has_erd = bool(arch.get("data_schema"))
+        passed = has_stack and has_sys and has_erd
 
-        print("\n" + "=" * 60)
-        print("Test completed.")
-        return result  # Return for use in selective regen test
+        report.record_result(
+            "Simple Requirements — Full Generation",
+            passed,
+            [
+                f"tech_stack: {'OK' if has_stack else 'MISSING'}",
+                f"system_diagram: {'OK' if has_sys else 'MISSING'}",
+                f"data_schema: {'OK' if has_erd else 'MISSING'}",
+            ],
+        )
+        return result
 
     except Exception as e:
-        print(f"\n❌ Error: {type(e).__name__}: {e}")
+        report.line(f"\n  ERROR: {type(e).__name__}: {e}")
+        report.record_result("Simple Requirements — Full Generation", False, [str(e)])
         raise
 
 
 async def test_selective_regeneration():
-    """Test selective regeneration - only regenerate specific artifacts."""
-    print("\n" + "=" * 60)
-    print("Selective Regeneration Test")
-    print("=" * 60)
+    report.section("TEST 2: Selective Regeneration")
 
-    # Initialize components
-    llm = GeminiClient(model="gemini-2.5-flash")
-    
-    from src.state.state_manager import StateManager
-    persistence = MockPersistenceAdapter()
-    state_manager = StateManager(persistence_adapter=persistence)
+    agent = _make_agent()
 
-    agent = ProjectArchitectAgent(
-        state_manager=state_manager,
-        llm_client=llm,
-    )
-
-    # Step 1: Full generation
-    print("\n🔄 Step 1: Full architecture generation...")
+    # ── Step 1: Full generation ──────────────────────────────────────────
+    report.line("  Step 1: Full generation (baseline)")
     test_input = {
         "requirements": {
             "functional": ["User login", "Dashboard", "REST API"],
             "constraints": ["Must use Python for backend"],
         }
     }
-    
+
     result1 = await agent.process(test_input)
     arch1 = result1["architecture"]
-    
-    print(f"   Tech Stack: {arch1.get('tech_stack', {}).get('backend', 'N/A')}")
-    print(f"   System Diagram: {'✓ generated' if arch1.get('system_diagram') else '✗ missing'}")
-    print(f"   ERD: {'✓ generated' if arch1.get('data_schema') else '✗ missing'}")
 
-    print("\nWaiting 4 minutes to avoid free-tier API rate limits...")
-    await asyncio.sleep(240)
+    report.kv("Backend", arch1.get("tech_stack", {}).get("backend", "N/A"))
+    report.kv("System Diagram", "generated" if arch1.get("system_diagram") else "MISSING")
+    report.kv("ERD", "generated" if arch1.get("data_schema") else "MISSING")
 
-    # Step 2: Selective regeneration - only ERD
-    print("\n🔄 Step 2: Selective regeneration (ERD only)...")
-    print('   User request: "Please regenerate only the ERD diagram"')
-    
+    report.line("\n  Waiting 1 minute for API rate limits...")
+    await asyncio.sleep(60)
+
+    # ── Step 2: ERD only ─────────────────────────────────────────────────
+    report.line("\n  Step 2: Selective regeneration — ERD only")
+    report.kv("User request", '"Please regenerate only the ERD diagram"')
+
     result2 = await agent.process({
         "requirements": test_input["requirements"],
         "existing_architecture": arch1,
-        "user_request": "Please regenerate only the ERD diagram"
+        "user_request": "Please regenerate only the ERD diagram",
     })
     arch2 = result2["architecture"]
 
-    # Compare results
-    print("\n📊 Comparison:")
-    
-    tech_stack_preserved = arch2.get("tech_stack") == arch1.get("tech_stack")
-    print(f"   Tech Stack preserved: {'✓ YES' if tech_stack_preserved else '✗ NO (regenerated)'}")
-    
-    system_diagram_preserved = arch2.get("system_diagram") == arch1.get("system_diagram")
-    print(f"   System Diagram preserved: {'✓ YES' if system_diagram_preserved else '✗ NO (regenerated)'}")
-    
+    ts_preserved = arch2.get("tech_stack") == arch1.get("tech_stack")
+    sys_preserved = arch2.get("system_diagram") == arch1.get("system_diagram")
     erd_changed = arch2.get("data_schema") != arch1.get("data_schema")
-    print(f"   ERD regenerated: {'✓ YES' if erd_changed else '✗ NO (same as before)'}")
 
-    # Step 3: Selective regeneration - tech stack (should cascade)
-    print("\n🔄 Step 3: Selective regeneration (tech stack change)...")
-    print('   User request: "Change the backend to Node.js with Express"')
-    
+    report.kv("Tech Stack preserved", "YES" if ts_preserved else "NO")
+    report.kv("System Diagram preserved", "YES" if sys_preserved else "NO")
+    report.kv("ERD regenerated", "YES" if erd_changed else "NO")
+
+    step2_pass = ts_preserved and sys_preserved and erd_changed
+    report.record_result(
+        "Selective Regen — ERD Only",
+        step2_pass,
+        [
+            f"tech_stack preserved: {ts_preserved}",
+            f"system_diagram preserved: {sys_preserved}",
+            f"erd regenerated: {erd_changed}",
+        ],
+    )
+
+    # ── Step 3: Backend change ───────────────────────────────────────────
+    report.line("\n  Step 3: Selective regeneration — backend change")
+    report.kv("User request", '"Change the backend to Node.js with Express"')
+
     result3 = await agent.process({
         "requirements": test_input["requirements"],
         "existing_architecture": arch1,
-        "user_request": "Change the backend to Node.js with Express"
+        "user_request": "Change the backend to Node.js with Express",
     })
     arch3 = result3["architecture"]
 
-    print("\n📊 Comparison (tech stack change should cascade):")
-    
-    tech_stack_changed = arch3.get("tech_stack") != arch1.get("tech_stack")
-    print(f"   Tech Stack changed: {'✓ YES' if tech_stack_changed else '✗ NO'}")
-    print(f"   New backend: {arch3.get('tech_stack', {}).get('backend', 'N/A')}")
+    ts_changed = arch3.get("tech_stack") != arch1.get("tech_stack")
+    new_backend = arch3.get("tech_stack", {}).get("backend", "N/A")
 
-    print("\n" + "=" * 60)
-    print("Selective regeneration test completed.")
-    print("=" * 60)
+    report.kv("Tech Stack changed", "YES" if ts_changed else "NO")
+    report.kv("New backend", new_backend)
+
+    _write_architecture(arch3)
+
+    step3_pass = ts_changed
+    report.record_result(
+        "Selective Regen — Backend Change",
+        step3_pass,
+        [f"tech_stack changed: {ts_changed}", f"new backend: {new_backend}"],
+    )
 
 
 async def test_complex_requirements_case():
-    """Test architect generation on a larger B2B scenario (friend's test case)."""
-    print("\n" + "=" * 60)
-    print("Complex Requirements Test")
-    print("=" * 60)
-
-    llm = GeminiClient(model="gemini-2.5-flash")
-
-    from src.state.state_manager import StateManager
-    persistence = MockPersistenceAdapter()
-    state_manager = StateManager(persistence_adapter=persistence)
-
-    agent = ProjectArchitectAgent(
-        state_manager=state_manager,
-        llm_client=llm,
-    )
+    report.section("TEST 3: Complex Requirements (B2B SaaS)")
 
     req = COMPLEX_REQUIREMENTS["requirements"]
-    print("\nInput Requirements:")
-    print(f"   Functional: {len(req.get('functional', []))} items")
-    print(f"   Non-Functional: {len(req.get('non_functional', []))} items")
-    print(f"   Constraints: {len(req.get('constraints', []))} items")
-    print(f"   User stories: {len(req.get('user_stories', []))} items")
+    report.kv("Functional requirements", str(len(req.get("functional", []))))
+    report.kv("Non-functional requirements", str(len(req.get("non_functional", []))))
+    report.kv("Constraints", str(len(req.get("constraints", []))))
+    report.kv("User stories", str(len(req.get("user_stories", []))))
+    report.line()
 
+    agent = _make_agent()
     result = await agent.process(COMPLEX_REQUIREMENTS)
     arch = result.get("architecture", {})
 
-    print("\nOutput Summary:")
-    print(f"   Backend: {arch.get('tech_stack', {}).get('backend', 'N/A')}")
-    print(f"   System Diagram: {'generated' if arch.get('system_diagram') else 'missing'}")
-    print(f"   ERD: {'generated' if arch.get('data_schema') else 'missing'}")
-    print(f"   Deployment: {arch.get('deployment_strategy', 'N/A')}")
+    _write_architecture(arch)
 
-    print("\n" + "=" * 60)
-    print("Complex requirements test completed.")
-    print("=" * 60)
+    has_stack = bool(arch.get("tech_stack"))
+    has_sys = bool(arch.get("system_diagram"))
+    has_erd = bool(arch.get("data_schema"))
+    passed = has_stack and has_sys and has_erd
 
+    report.record_result(
+        "Complex Requirements — Full Generation",
+        passed,
+        [
+            f"tech_stack: {'OK' if has_stack else 'MISSING'}",
+            f"system_diagram: {'OK' if has_sys else 'MISSING'}",
+            f"data_schema: {'OK' if has_erd else 'MISSING'}",
+        ],
+    )
+
+
+# ============================================================================
+# Runner
+# ============================================================================
 
 async def run_all_tests():
-    """Run all integration tests."""
-    print(f"Run mode: {RUN_MODE}")
-    if RUN_MODE == "simple":
-        await main()
-        await test_selective_regeneration()
-    elif RUN_MODE == "complex":
-        await test_complex_requirements_case()
-    else:
-        await main()
-        await test_selective_regeneration()
-        await test_complex_requirements_case()
+    report.open()
+    report.line(f"  Run mode: {RUN_MODE}\n")
+
+    try:
+        if RUN_MODE == "simple":
+            await main()
+            report.line("\n  Waiting 1 minute between tests...")
+            await asyncio.sleep(60)
+            await test_selective_regeneration()
+        elif RUN_MODE == "complex":
+            await test_complex_requirements_case()
+        else:
+            await main()
+            report.line("\n  Waiting 1 minute between tests...")
+            await asyncio.sleep(60)
+            await test_selective_regeneration()
+            report.line("\n  Waiting 1 minute between tests...")
+            await asyncio.sleep(60)
+            await test_complex_requirements_case()
+    finally:
+        report.close()
+        print(f"\n📄 Full report saved to: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
