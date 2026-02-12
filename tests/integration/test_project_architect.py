@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from datetime import datetime
+from datetime import datetime
 from pathlib import Path
 
 # Load environment variables from .env (checks project root and parent)

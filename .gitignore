@@ -41,13 +41,11 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Vector store data (FAISS index + ingested chunks; run scripts/ingest_mermaid_docs.py to build)
-data/vector_stores/
-
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+test_output/
 test_output/
 
 # Logs
@@ -58,6 +56,7 @@ test_output/
 *.sqlite
 *.sqlite3
 
+# Local project docs (changelog for personal/session use only)
 # Local project docs (changelog for personal/session use only)
 docs/changelog.md
 docs/changelog-session-2026-02-08.md

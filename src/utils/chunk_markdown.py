@@ -36,4 +36,4 @@ def chunk_markdown(text: str, max_chars: int = 700) -> list[str]:
                 current_len = len(part) + 1
     if current:
         chunks.append("\n\n".join(current))
-    return [c for c in chunks if c.strip()] 
+    return [c for c in chunks if c.strip()]
