@@ -370,17 +370,44 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             return self._default_tech_stack(constraints), None
 
         prompt = (
-            "You are a Senior Software Architect. Analyze the requirements and choose a concrete tech stack. "
-            "Output strict JSON with these keys: frontend, backend, database, devops, explanation. "
-            "frontend, backend, database, devops: each must be a single string (e.g. 'React 18 + TypeScript', 'FastAPI (Python 3.11)', 'PostgreSQL 15', 'Docker + GitHub Actions'). "
-            "explanation: a short paragraph (2-4 sentences) explaining why you chose this stack and how it fits the requirements and constraints. "
-            "Respect all constraints. Consider non-functional requirements (scale, latency, mobile vs web) when choosing. "
-            "Prefer specific, production-ready choices over vague ones like 'Python' or 'React'. "
-            "Use the latest user request as highest-priority intent. "
-            "If older constraints conflict with the latest user request, follow the latest user request.\n\n"
-            f"Requirements: {json.dumps(requirements, ensure_ascii=True)}\n"
-            f"Constraints: {json.dumps(constraints, ensure_ascii=True)}"
-        )
+    "You are a Senior Software Architect with expertise across multiple technology ecosystems. "
+    "Your task is to analyze the specific requirements and constraints below, then select the MOST APPROPRIATE tech stack for THIS PARTICULAR project.\n\n"
+    
+    "CRITICAL INSTRUCTIONS:\n"
+    "- Base your choices ENTIRELY on the requirements and constraints provided\n"
+    "- Do NOT default to common examples unless they genuinely fit best\n"
+    "- Consider the project's unique characteristics: scale, domain, team context, and constraints\n"
+    "- Justify each choice based on specific requirement alignment, not general popularity\n\n"
+    
+    "DECISION FRAMEWORK:\n"
+    "1. Analyze functional requirements to determine application type and complexity\n"
+    "2. Review non-functional requirements (scale, performance, latency, reliability)\n"
+    "3. Evaluate constraints (budget, team skills, timeline, existing infrastructure)\n"
+    "4. Select technologies that maximize requirement satisfaction while respecting all constraints\n"
+    "5. Prioritize the latest user request if it conflicts with earlier constraints\n\n"
+    
+    "OUTPUT FORMAT (strict JSON):\n"
+    "{\n"
+    '  "frontend": "specific technology + version (e.g., \'Next.js 14 + TypeScript\', \'Flutter 3.16\', \'Vue 3 + Vite\')",\n'
+    '  "backend": "specific technology + version (e.g., \'Node.js 20 + Express\', \'Django 5.0\', \'Go 1.21 + Gin\')",\n'
+    '  "database": "specific technology + version (e.g., \'MongoDB 7.0\', \'PostgreSQL 16\', \'MySQL 8.0 + Redis\')",\n'
+    '  "devops": "specific tools + orchestration (e.g., \'Kubernetes + ArgoCD\', \'Docker + GitLab CI\', \'AWS ECS + Terraform\')",\n'
+    '  "explanation": "2-4 sentences explaining why THIS stack fits THESE specific requirements. Reference actual requirements by name/type. Highlight trade-offs considered."\n'
+    "}\n\n"
+    
+    "QUALITY STANDARDS:\n"
+    "- Be specific: Include versions, not just names (e.g., 'React 18' not 'React')\n"
+    "- Be concrete: Actual frameworks, not categories (e.g., 'FastAPI' not 'Python framework')\n"
+    "- Be intentional: Every choice must have a requirement-driven justification\n"
+    "- Be current: Prefer stable, production-ready versions (avoid bleeding edge unless justified)\n\n"
+    
+    f"PROJECT REQUIREMENTS:\n{json.dumps(requirements, indent=2, ensure_ascii=True)}\n\n"
+    f"PROJECT CONSTRAINTS:\n{json.dumps(constraints, indent=2, ensure_ascii=True)}\n\n"
+    
+    "Think through your choices step by step before outputting JSON. "
+    "Ask yourself: 'Why is this the RIGHT stack for THESE requirements?' not 'What stack do I usually use?'"
+)
+
         if user_request:
             prompt += f"\nLatest user request: {user_request}"
 
