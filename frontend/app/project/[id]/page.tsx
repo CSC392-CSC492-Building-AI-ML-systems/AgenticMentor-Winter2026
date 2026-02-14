@@ -1,30 +1,35 @@
-import Sidebar from "@/components/layout/Sidebar";
-import Topbar from "@/components/layout/Topbar";
-import ChatWindow from "@/components/chat/ChatWindow";
+import TopNav from "@/components/layout/TopNav";
+import RequirementPanel from "@/components/panels/RequirementPanel";
+import ArchitecturePanel from "@/components/panels/ArchitecturePanel";
+import WireframePanel from "@/components/panels/WireframePanel";
+import CommandInput from "@/components/command/CommandInput";
 
 export default function ProjectPage() {
   return (
-    <div className="flex h-screen overflow-hidden bg-white">
-      {/* Fixed Sidebar */}
-      <div className="flex-shrink-0">
-        <Sidebar />
-      </div>
+    <div className="flex flex-col h-screen w-full bg-black">
+      {/* Top Navigation Bar */}
+      <TopNav />
 
-      {/* Main Content Area */}
-      <div className="flex flex-col flex-1 min-w-0">
-        <Topbar />
-        
-        {/* Chat Area */}
-        <div className="flex-1 flex overflow-hidden">
-            <ChatWindow />
-            
-            {/* Optional Right Panel - Hidden for now to match Screenshot 1's focused view, 
-                but structure is here if you want to expand later */}
-            {/* <div className="hidden lg:block w-[400px] border-l border-gray-200 p-4">
-               Artifact Viewer Area 
-            </div> */}
+      {/* 3-Column Workspace */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left Column: Requirements (approx 25%) */}
+        <div className="w-1/4 min-w-[300px] border-r border-[#333] flex flex-col h-full relative">
+          <RequirementPanel />
+        </div>
+
+        {/* Center Column: Architecture (approx 45%) */}
+        <div className="w-[45%] border-r border-[#333] flex flex-col h-full">
+          <ArchitecturePanel />
+        </div>
+
+        {/* Right Column: Wireframes & Terminal (approx 30%) */}
+        <div className="w-[30%] min-w-[350px] flex flex-col h-full relative">
+          <WireframePanel />
         </div>
       </div>
+
+      {/* Bottom Command Bar */}
+      <CommandInput />
     </div>
   );
 }

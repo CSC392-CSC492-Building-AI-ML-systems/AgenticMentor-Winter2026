@@ -2,8 +2,13 @@
 
 @layer base {
   body {
-    /* Use standard hex or rgb if @apply is being finicky with the theme */
-    background-color: #F9FAFB; 
-    color: #0f172a; /* This is the hex for slate-900 */
+    background-color: #000000;
+    color: #ffffff; /* Bumped from #e5e5e5 */
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
+  
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #000000; }
+  ::-webkit-scrollbar-thumb { background: #444444; } /* Slightly brighter scrollbar */
+  ::-webkit-scrollbar-thumb:hover { background: #666666; }
 }
