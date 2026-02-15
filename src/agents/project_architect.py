@@ -315,6 +315,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             diagram_kind="system",
             requirements_text=state.get("requirements_text", ""),
             app_type=state.get("app_type", "Web application"),
+            existing_diagram=existing.get("system_diagram") if existing else None,
         )
         return {"system_diagram": diagram}
 
@@ -334,6 +335,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             diagram_kind="erd",
             requirements_text=state.get("requirements_text", ""),
             app_type=state.get("app_type", "Web application"),
+            existing_diagram=existing.get("data_schema") if existing else None,
         )
         return {"data_schema": diagram}
 
@@ -457,8 +459,10 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         diagram_kind: str,
         requirements_text: str,
         app_type: str,
+        existing_diagram: str | None = None,
     ) -> str:
-        """Generate Mermaid diagram via LLM with RAG, validation, retry, and fallback."""
+        """Generate Mermaid diagram via LLM with RAG, validation, retry, and fallback.
+        When existing_diagram is set (selective regen), prompt asks for an improved/alternative version."""
         
         participants = ["User", "Frontend", "API", "Database"]
         
@@ -472,6 +476,16 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
 
         if self.llm_client is None:
             return fallback_diagram
+
+        # When selectively regenerating, ask for a fresh take so output is not a copy
+        regen_hint = ""
+        if existing_diagram and existing_diagram.strip():
+            regen_hint = (
+                "The user asked to regenerate this diagram. Below is the current version. "
+                "Produce an improved or alternative version that still satisfies the requirements; "
+                "vary naming, layout, or structure where reasonable so this is a fresh take, not a copy.\n\n"
+                f"Current diagram:\n{existing_diagram.strip()[:2000]}\n\n"
+            )
 
         # Fetch RAG snippets for better diagram generation
         rag_snippets = self._get_mermaid_rag_snippets(diagram_kind)
@@ -490,6 +504,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
                 "and must not include markdown fences. "
                 "Include every entity and relationship implied by the requirements (e.g. users, sessions, core domain entities, audit/log tables). "
                 "Use proper Mermaid erDiagram syntax: entity blocks with attributes and relationship lines (||--o{, }o--||, etc.).\n\n"
+                f"{regen_hint}"
                 f"{rag_block}"
                 f"Requirements: {requirements_text}"
             )
@@ -504,6 +519,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
                 "2. Node labels that contain parentheses or commas MUST be in double quotes inside brackets, e.g. N[\"Frontend (Web UI)\"] or N[\"Cache (e.g. Redis)\"]. Unquoted [Frontend (Web UI)] causes parse errors.\n"
                 "3. Use simple node IDs (letters, no spaces) then the label: ID[Label] or ID[\"Label with (parens)\"].\n"
                 "Show the main components and label edges with the main flows. Reflect the actual requirements.\n\n"
+                f"{regen_hint}"
                 f"{rag_block}"
                 f"Application Type: {app_type}\n"
                 f"Participants: {', '.join(participants)}\n"
