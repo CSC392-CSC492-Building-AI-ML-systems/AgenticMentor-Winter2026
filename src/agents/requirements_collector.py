@@ -1,3 +1,6 @@
+"""Collects and normalizes project requirements from user input."""
+
+from __future__ import annotations
 from typing import TypedDict, Annotated, Sequence, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage

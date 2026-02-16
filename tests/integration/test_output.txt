@@ -1,0 +1,430 @@
+======================================================================
+  ProjectArchitectAgent — Integration Test Report
+  Generated: 2026-02-15 19:50:41
+  Run mode:  both
+======================================================================
+
+  Run mode: both
+
+
+──────────────────────────────────────────────────────────────────────
+  TEST 1: Simple Requirements — Full Generation
+──────────────────────────────────────────────────────────────────────
+
+  Functional requirements: 3
+  Non-functional requirements: 2
+  Constraints: 1
+
+  Frontend: React 18 + Vite
+  Backend: FastAPI 0.110 + Python 3.11
+  Database: PostgreSQL 16
+  DevOps: Docker + AWS ECS + Terraform + GitLab CI/CD
+
+  ── Tech Stack Rationale ──
+  This stack is chosen to meet the 'Must use Python for backend' constraint while ensuring high performance and scalability. FastAPI provides an asynchronous, high-performance API for 'mobile clients' and 'dashboard' data, crucial for 'response time under 200ms' and handling '500 concurrent users'. React 18 with Vite offers a modern, efficient frontend for the 'dashboard showing user activity'. PostgreSQL 16 is a robust relational database suitable for 'user authentication' and activity logs, while Docker, AWS ECS, Terraform, and GitLab CI/CD provide a scalable, automated, and reliable deployment pipeline.
+
+
+  ── System Diagram (Mermaid) ──
+  graph TD
+      U[User]
+      F["Frontend (Mobile App)"]
+      A["API (Python Backend)"]
+      DB[Database]
+  
+      U -->|Enters email and password| F
+      F -->|Sends authentication request| A
+      A -->|Verifies credentials| DB
+      DB -->|Returns verification result| A
+      A -->|Returns auth token or error| F
+      F -->|Displays login status| U
+  
+      F -->|Requests user activity| A
+      A -->|Queries user activity data| DB
+      DB -->|Returns activity data| A
+      A -->|Sends dashboard data| F
+      F -->|Displays dashboard| U
+
+
+  ── ERD Diagram (Mermaid) ──
+  erDiagram
+      User {
+          int id PK
+          string email
+          string password_hash
+          datetime created_at
+          datetime updated_at
+      }
+  
+      Session {
+          int id PK
+          int user_id FK
+          string token
+          datetime expires_at
+          datetime created_at
+      }
+  
+      ActivityLog {
+          int id PK
+          int user_id FK
+          string activity_type
+          string details
+          datetime timestamp
+      }
+  
+      User ||--o{ Session : "has"
+      User ||--o{ ActivityLog : "generates"
+
+  Deployment: Containerized deployment on cloud VM/Kubernetes with managed PostgreSQL.
+
+  Waiting 1 minute between tests...
+
+──────────────────────────────────────────────────────────────────────
+  TEST 2: Selective Regeneration
+──────────────────────────────────────────────────────────────────────
+
+  Step 1: Full generation (baseline)
+  Backend: FastAPI 0.110 + Python 3.11
+  System Diagram: generated
+  ERD: generated
+
+  Waiting 1 minute for API rate limits...
+
+  Step 2: Selective regeneration — ERD only
+  User request: "Please regenerate only the ERD diagram"
+  Tech Stack preserved: YES
+  System Diagram preserved: YES
+  ERD regenerated: YES
+
+  Step 3: Selective regeneration — backend change
+  User request: "Change the backend to Node.js with Express"
+  Tech Stack changed: YES
+  New backend: Node.js 20 + Express 4.x
+  Frontend: Next.js 14 + React 18 + TypeScript
+  Backend: Node.js 20 + Express 4.x
+  Database: PostgreSQL 16
+  DevOps: Docker + AWS ECS + Terraform + GitHub Actions
+
+  ── Tech Stack Rationale ──
+  The backend is strictly defined by the 'Must use Node.js for backend' constraint and the 'latest user request' for Express, making 'Node.js 20 + Express 4.x' the only viable choice for the REST API. For the 'Dashboard' and 'User login' frontend, Next.js 14 with React 18 and TypeScript offers a robust, performant, and maintainable solution, leveraging SSR for better initial load and a shared language ecosystem with the backend. PostgreSQL 16 is chosen as a reliable, feature-rich relational database suitable for general-purpose data storage without specific scale constraints. DevOps utilizes Docker for containerization, AWS ECS for managed orchestration (simpler than Kubernetes for initial scale), Terraform for IaC, and GitHub Actions for CI/CD, providing an efficient and scalable deployment pipeline.
+
+
+  ── System Diagram (Mermaid) ──
+  graph TD
+      U[User]
+      FE["Frontend (Web Application)"]
+      API["API (Python Backend)"]
+      DB[Database]
+  
+      U -->|Accesses| FE
+      FE -->|Login Request| API
+      FE -->|Dashboard Data Request| API
+      FE -->|REST API Calls| API
+      API -->|Authenticate User| DB
+      API -->|Read/Write Data| DB
+
+
+  ── ERD Diagram (Mermaid) ──
+  erDiagram
+      User {
+          string id PK
+          string username
+          string email
+          string password_hash
+          datetime created_at
+          datetime updated_at
+          bool is_active
+      }
+  
+      Session {
+          string id PK
+          string session_token
+          datetime expires_at
+          datetime created_at
+      }
+  
+      API_Key {
+          string id PK
+          string key_hash
+          string description
+          bool is_active
+          datetime created_at
+          datetime expires_at
+      }
+  
+      Dashboard_Setting {
+          string id PK
+          string name
+          json layout_config
+          datetime created_at
+          datetime updated_at
+      }
+  
+      Audit_Log {
+          string id PK
+          datetime timestamp
+          string event_type
+          string entity_type
+          string entity_id
+          json old_value
+          json new_value
+          string ip_address
+          string user_agent
+      }
+  
+      User ||--o{ Session : "has"
+      User ||--o{ API_Key : "manages"
+      User ||--|| Dashboard_Setting : "configures"
+      User ||--o{ Audit_Log : "performs"
+
+  Deployment: Vercel for frontend, managed PostgreSQL, containerized backend services.
+
+  Waiting 1 minute between tests...
+
+──────────────────────────────────────────────────────────────────────
+  TEST 3: Complex Requirements (B2B SaaS)
+──────────────────────────────────────────────────────────────────────
+
+  Functional requirements: 7
+  Non-functional requirements: 4
+  Constraints: 2
+  User stories: 2
+
+  Frontend: Next.js 14 + TypeScript
+  Backend: NestJS 10 + TypeScript
+  Database: PostgreSQL 16 + Redis 7
+  DevOps: Kubernetes 1.28 (managed service) + Docker + GitLab CI/CD + Terraform 1.6
+
+  ── Tech Stack Rationale ──
+  This stack is chosen for its robust capabilities in handling multi-tenant B2B SaaS requirements, high scalability, and performance targets. NestJS (Node.js constraint) provides a structured, performant backend for REST/GraphQL APIs and real-time features, while Next.js delivers a rich, interactive frontend. PostgreSQL handles complex relational data, audit logs, and multi-tenancy, complemented by Redis for caching and real-time notifications, all leveraging managed services. Kubernetes, managed via Terraform and GitLab CI/CD, ensures the required horizontal scaling, 99.9% uptime, and data residency options.
+
+
+  ── System Diagram (Mermaid) ──
+  graph TD
+      U[User] -->|Access UI| FE["Frontend (Web UI)"]
+      FE -->|API Requests| LB[Load Balancer]
+      LB -->|Route Requests| API["API (REST/GraphQL)"]
+  
+      FE -->|Login/Auth Check| AUTH[Authentication Service]
+      AUTH -->|SAML/OIDC| SSO["SSO Provider (SAML/OIDC)"]
+      AUTH -->|User/Tenant Data| DB["Database (Multi-tenant)"]
+      API -->|Validate Token/RBAC| AUTH
+  
+      API -->|CRUD Operations| DB
+      API -->|Upload/Download Files| FS["File Storage (e.g. S3)"]
+  
+      API -->|Enqueue Async Tasks| MQ["Message Queue (e.g. Kafka/RabbitMQ)"]
+      MQ -->|Process Tasks| WORKER[Worker Service]
+      WORKER -->|Update Data| DB
+      WORKER -->|Trigger Notifications| NOTIF[Notification Service]
+  
+      API -->|Record Event| AUDIT[Audit Log Service]
+      AUDIT -->|Store Logs| DB
+  
+      API -->|Trigger Webhook| WEBHOOK[Webhook Service]
+      WEBHOOK -->|Send Event| EXT[External Integrations]
+  
+      NOTIF -->|In-app Notifications| FE
+      NOTIF -->|Send Email| EMAIL[Email Service]
+
+
+  ── ERD Diagram (Mermaid) ──
+  erDiagram
+      Organization {
+          string id PK
+          string name
+          boolean sso_enabled
+          boolean email_password_fallback_enabled
+          string data_residency_region
+          datetime created_at
+          datetime updated_at
+      }
+  
+      User {
+          string id PK
+          string organization_id FK
+          string email
+          string password_hash
+          string name
+          boolean is_active
+          datetime last_login_at
+          datetime created_at
+          datetime updated_at
+      }
+  
+      Role {
+          string id PK
+          string name
+          string description
+      }
+  
+      UserRole {
+          string user_id PK,FK
+          string role_id PK,FK
+          string organization_id PK,FK
+          datetime assigned_at
+      }
+  
+      SSOConfiguration {
+          string id PK
+          string organization_id FK
+          string sso_type
+          string config_json
+          datetime created_at
+          datetime updated_at
+      }
+  
+      Session {
+          string id PK
+          string user_id FK
+          string token
+          datetime expires_at
+          datetime created_at
+      }
+  
+      Project {
+          string id PK
+          string organization_id FK
+          string name
+          string description
+          string created_by_user_id FK
+          datetime created_at
+          datetime updated_at
+      }
+  
+      Milestone {
+          string id PK
+          string project_id FK
+          string name
+          string description
+          datetime due_date
+          string status
+          datetime created_at
+          datetime updated_at
+      }
+  
+      Task {
+          string id PK
+          string project_id FK
+          string name
+          string description
+          datetime due_date
+          string status
+          string assigned_to_user_id FK
+          string created_by_user_id FK
+          datetime created_at
+          datetime updated_at
+      }
+  
+      FileAttachment {
+          string id PK
+          string task_id FK
+          string filename
+          string file_url
+          integer file_size_bytes
+          string mime_type
+          string uploaded_by_user_id FK
+          datetime uploaded_at
+      }
+  
+      AuditLog {
+          string id PK
+          string organization_id FK
+          string user_id FK
+          string action_type
+          string entity_type
+          string entity_id
+          string details_json
+          datetime timestamp
+      }
+  
+      Notification {
+          string id PK
+          string user_id FK
+          string organization_id FK
+          string message
+          string type
+          boolean is_read
+          datetime created_at
+          string related_entity_type
+          string related_entity_id
+      }
+  
+      UserPreferences {
+          string user_id PK,FK
+          boolean email_notifications_enabled
+          boolean in_app_notifications_enabled
+          datetime updated_at
+      }
+  
+      WebhookConfiguration {
+          string id PK
+          string organization_id FK
+          string event_type
+          string target_url
+          string secret_hash
+          boolean is_active
+          datetime created_at
+          datetime updated_at
+      }
+  
+      WebhookEventLog {
+          string id PK
+          string webhook_config_id FK
+          string event_payload_json
+          integer response_status_code
+          string response_body
+          datetime sent_at
+          integer retries
+          datetime next_retry_at
+      }
+  
+      Organization ||--o{ User : "has"
+      Organization ||--o{ SSOConfiguration : "configures"
+      Organization ||--o{ Project : "manages"
+      Organization ||--o{ AuditLog : "logs_for"
+      Organization ||--o{ Notification : "sends_for"
+      Organization ||--o{ WebhookConfiguration : "integrates_with"
+  
+      User ||--o{ Session : "has"
+      User ||--o{ UserRole : "assigned"
+      User ||--o{ AuditLog : "performs"
+      User ||--o{ Notification : "receives"
+      User |o--|| UserPreferences : "sets"
+      User }o--|| Project : "created_by"
+      User }o--o| Task : "assigned_to"
+      User }o--|| Task : "created_by"
+      User }o--|| FileAttachment : "uploaded_by"
+  
+      Role ||--o{ UserRole : "defines"
+  
+      Project ||--o{ Milestone : "contains"
+      Project ||--o{ Task : "includes"
+  
+      Task ||--o{ FileAttachment : "has"
+  
+      WebhookConfiguration ||--o{ WebhookEventLog : "generates"
+
+  Deployment: Vercel for frontend, managed PostgreSQL, containerized backend services.
+
+======================================================================
+  SUMMARY
+======================================================================
+
+  [PASS] Simple Requirements — Full Generation
+         tech_stack: OK
+         system_diagram: OK
+         data_schema: OK
+  [PASS] Selective Regen — ERD Only
+         tech_stack preserved: True
+         system_diagram preserved: True
+         erd regenerated: True
+  [PASS] Selective Regen — Backend Change
+         tech_stack changed: True
+         new backend: Node.js 20 + Express 4.x
+  [PASS] Complex Requirements — Full Generation
+         tech_stack: OK
+         system_diagram: OK
+         data_schema: OK
+
+  Result: 4/4 tests passed.
+

@@ -1,7 +1,25 @@
+"""Pydantic schemas for output validation."""
+from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from enum import Enum
+from typing import Literal
+
+class MermaidLLMResponse(BaseModel):
+        """Structured Mermaid response expected from LLM diagram generation."""
+        diagram_type: Literal["system", "erd"] = Field(
+            description="The requested Mermaid diagram type."
+        )
+        mermaid_code: str = Field(
+            min_length=1,
+            description="Raw Mermaid code only, no markdown fences.",
+        )
+
+class ValidationResult(BaseModel):
+        """Represents the result of validating an agent output."""
+        valid: bool
+        message: str = ""
 
 
 class MessageRole(str, Enum):
@@ -102,3 +120,4 @@ class ChatResponse(BaseModel):
                 }
             }
         }
+    
