@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+from pathlib import Path
 from src.agents.base_agent import BaseAgent
 from src.models.mockup_contract import MockupAgentRequest, MockupAgentResponse, MockupStateEntry
 from src.models.wireframe_spec import WireframeSpec
@@ -149,24 +150,135 @@ Focus on essential MVP screens only (3-5 screens typical).
     async def _export_artifacts(
         self, excalidraw_json: Dict[str, Any], spec: WireframeSpec
     ) -> Dict[str, str]:
-        """Export Excalidraw scene to PNG/SVG."""
-        # TODO: Implement export using Excalidraw export utilities
-        # For now, just save the JSON
+        """Export Excalidraw scene to JSON and PNG."""
         import json
         from pathlib import Path
         
         output_dir = Path("outputs/mockups")
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        json_path = output_dir / f"{spec.project_name.replace(' ', '_')}.excalidraw"
+        project_slug = spec.project_name.replace(' ', '_')
+        
+        # Save JSON file
+        json_path = output_dir / f"{project_slug}.excalidraw"
         with open(json_path, "w") as f:
             json.dump(excalidraw_json, f, indent=2)
         
-        return {
+        export_paths = {
             "excalidraw_json": str(json_path),
-            # "png": str(output_dir / "scene.png"),  # TODO: implement PNG export
-            # "svg": str(output_dir / "scene.svg"),  # TODO: implement SVG export
         }
+        
+        # Try to export PNG using Playwright
+        try:
+            png_path = await self._export_to_png(excalidraw_json, output_dir / f"{project_slug}.png")
+            if png_path:
+                export_paths["png"] = str(png_path)
+        except Exception as e:
+            print(f"  [mockup] PNG export skipped: {e}", flush=True)
+        
+        return export_paths
+    
+    async def _export_to_png(self, excalidraw_json: Dict[str, Any], output_path: Path) -> Optional[Path]:
+        """Export Excalidraw scene to PNG using Playwright."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            print("  [mockup] Playwright not installed. Install with: pip install playwright && playwright install", flush=True)
+            return None
+        
+        try:
+            # Create HTML with embedded Excalidraw
+            html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@excalidraw/excalidraw/dist/excalidraw.production.min.js"></script>
+    <style>
+        body {{ margin: 0; padding: 0; overflow: hidden; }}
+        #app {{ width: 100vw; height: 100vh; }}
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script>
+        const App = () => {{
+            const excalidrawData = {json.dumps(excalidraw_json)};
+            return React.createElement(
+                ExcalidrawLib.Excalidraw,
+                {{
+                    initialData: excalidrawData,
+                    viewModeEnabled: true,
+                    zenModeEnabled: false,
+                    gridModeEnabled: true,
+                }}
+            );
+        }};
+        
+        const root = ReactDOM.createRoot(document.getElementById('app'));
+        root.render(React.createElement(App));
+        
+        // Signal ready after render
+        setTimeout(() => {{
+            window.excalidrawReady = true;
+        }}, 2000);
+    </script>
+</body>
+</html>
+"""
+            
+            import tempfile
+            import json as json_module
+            
+            # Save HTML to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+                f.write(html_content)
+                html_path = f.name
+            
+            # Calculate viewport size based on content
+            # Find max x and y from elements
+            max_x = max_y = 0
+            for elem in excalidraw_json.get('elements', []):
+                elem_x = elem.get('x', 0) + elem.get('width', 0)
+                elem_y = elem.get('y', 0) + elem.get('height', 0)
+                max_x = max(max_x, elem_x)
+                max_y = max(max_y, elem_y)
+            
+            # Add padding
+            viewport_width = int(max_x + 200)
+            viewport_height = int(max_y + 200)
+            
+            # Render with Playwright
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(
+                    viewport={'width': viewport_width, 'height': viewport_height}
+                )
+                
+                await page.goto(f'file://{html_path}')
+                
+                # Wait for Excalidraw to load
+                await page.wait_for_function('window.excalidrawReady === true', timeout=10000)
+                
+                # Take screenshot
+                await page.screenshot(path=str(output_path), full_page=True)
+                await browser.close()
+            
+            # Clean up temp file
+            import os
+            os.unlink(html_path)
+            
+            print(f"  [mockup] PNG exported to: {output_path}", flush=True)
+            return output_path
+            
+        except Exception as e:
+            print(f"  [mockup] PNG export failed: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _generate_summary(self, spec: WireframeSpec) -> str:
         """Generate human-readable summary."""

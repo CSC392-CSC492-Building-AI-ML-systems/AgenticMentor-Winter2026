@@ -86,7 +86,7 @@ class ExcalidrawCompiler:
             x=x_offset + 20,
             y=y_offset - 40,
             text=screen.screen_name,
-            fontSize=24,
+            font_size=24,
             font_family=1,
         ))
         

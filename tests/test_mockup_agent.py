@@ -5,9 +5,16 @@ Test script for Mockup Agent - Backend only
 This script tests the Mockup Agent without LLM (fallback mode) and with LLM if configured.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import asyncio
 import json
-from pathlib import Path
+import os
 from src.agents.mockup_agent import MockupAgent
 from src.models.mockup_contract import MockupAgentRequest
 from src.models.wireframe_spec import WireframeSpec, ScreenSpec, ComponentSpec, NavigationLink
@@ -145,6 +152,9 @@ async def test_compiler_only():
     for elem_type, count in sorted(element_types.items()):
         print(f"    - {elem_type}: {count}")
     
+    # Note: PNG export is done in the full agent test
+    print("\n  Note: PNG export test is in Test 2 (MockupAgent)")
+    
     return excalidraw_json
 
 
@@ -208,12 +218,22 @@ async def test_agent_fallback_mode():
         print("\n  Exported files:")
         for key, path in response['export_paths'].items():
             print(f"    - {key}: {path}")
+            # Check if PNG was generated
+            if key == "png":
+                from pathlib import Path
+                if Path(path).exists():
+                    print(f"      ✓ PNG file created successfully!")
+                    print(f"      Size: {Path(path).stat().st_size} bytes")
+                else:
+                    print(f"      ⚠️ PNG file not found (Playwright may not be installed)")
     
     # Show state delta
     mockup_entries = response['state_delta']['mockups']
     print(f"\n  State delta contains {len(mockup_entries)} mockup entries")
     for entry in mockup_entries:
         print(f"    - {entry['screen_name']} (template: {entry['template_used']})")
+        if entry.get('screenshot_path'):
+            print(f"      Screenshot: {entry['screenshot_path']}")
     
     return response
 
@@ -225,11 +245,12 @@ async def test_agent_with_llm():
     from src.utils.config import settings
     
     # Check if LLM is configured
-    if not settings.google_api_key or settings.google_api_key == "your-gemini-api-key-here":
-        print("⚠️  GOOGLE_API_KEY not configured in .env")
+    if not settings.gemini_api_key or settings.gemini_api_key == "your-gemini-api-key-here":
+        print("⚠️  GEMINI_API_KEY not configured in .env")
         print("   Skipping LLM test. To enable:")
         print("   1. Copy .env.example to .env")
-        print("   2. Add your Google API key: GOOGLE_API_KEY=your-key-here")
+        print("   2. Add your Gemini API key to .env:")
+        print("      GEMINI_API_KEY=your-key-here")
         print("   3. Run this test again")
         return None
     
@@ -239,8 +260,8 @@ async def test_agent_with_llm():
     from langchain_google_genai import ChatGoogleGenerativeAI
     
     llm_client = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=settings.google_api_key,
+        model=settings.model_name,
+        api_key=settings.gemini_api_key,
         temperature=0.7,
     )
     
@@ -317,6 +338,14 @@ async def test_agent_with_llm():
             print("\n  Exported files:")
             for key, path in response['export_paths'].items():
                 print(f"    - {key}: {path}")
+                # Check if PNG was generated
+                if key == "png":
+                    from pathlib import Path
+                    if Path(path).exists():
+                        print(f"      ✓ PNG file created successfully!")
+                        print(f"      Size: {Path(path).stat().st_size} bytes")
+                    else:
+                        print(f"      ⚠️ PNG file not found (Playwright may not be installed)")
         
         return response
         
@@ -418,7 +447,8 @@ async def main():
         print("\n📋 NEXT STEPS:")
         print("  1. Check outputs/mockups/test/ for generated .excalidraw files")
         print("  2. Open files at https://excalidraw.com to view wireframes")
-        print("  3. To test with LLM: Configure GOOGLE_API_KEY in .env")
+        print("  3. To test with LLM: Add GEMINI_API_KEY to .env")
+        print("  4. To enable PNG export: pip3 install playwright && playwright install chromium")
         print("\n")
         
     except Exception as e:
