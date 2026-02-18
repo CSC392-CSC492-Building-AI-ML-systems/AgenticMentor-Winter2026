@@ -99,6 +99,15 @@ class MasterOrchestrator:
                 project_state = await self.state.update(session_id, {"current_phase": next_phase})
             results.append(result)
         message = self._synthesize_response(results)
+        # 3.3 Conversation history: append user + assistant turns and persist.
+        # We set the field directly (bypassing StateManager's list-extend merge)
+        # so re-running process_request never double-appends old entries.
+        new_history = list(project_state.conversation_history or [])
+        new_history.append({"role": "user", "content": user_input or ""})
+        new_history.append({"role": "assistant", "content": message})
+        project_state.conversation_history = new_history
+        await self.state.db.save(session_id, project_state.model_dump())
+        self.state.cache[session_id] = project_state
         return {
             "message": message,
             "state_snapshot": project_state.model_dump() if project_state else None,
