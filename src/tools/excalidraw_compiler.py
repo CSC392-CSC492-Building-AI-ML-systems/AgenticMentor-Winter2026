@@ -3,6 +3,9 @@ from typing import List, Dict, Any
 import uuid
 from datetime import datetime
 
+from src.models.wireframe_spec import WireframeSpec, ScreenSpec, ComponentSpec, NavigationLink
+from src.tools.wireframe_template import TEMPLATES, COMPONENT_RENDERERS, TemplateLayout
+
 class ExcalidrawCompiler:
     """Compiles WireframeSpec into Excalidraw JSON."""
     
@@ -259,6 +262,72 @@ class ExcalidrawCompiler:
                 btn_x + button_width/2 - 30, button_y + 15, btn_label, 14,
                 text_color="#ffffff" if idx == 0 else self.TEXT_COLOR
             ))
+        
+        return elements
+    
+    def render_hero(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
+        """Render hero section."""
+        elements = []
+        elements.append(self._create_rectangle(x, y, w, h, self.BACKGROUND_COLOR, stroke_width=1))
+        elements.append(self._create_text_element(x + w/2 - 50, y + h/2 - 20, comp.label, 24))
+        return elements
+    
+    def render_detail_view(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
+        """Render detail view."""
+        elements = []
+        elements.append(self._create_rectangle(x, y, w, h, "#ffffff", stroke_width=1))
+        elements.append(self._create_text_element(x + 20, y + 20, comp.label, 18))
+        
+        # Add some detail fields
+        if comp.children:
+            field_y = y + 60
+            for child in comp.children:
+                elements.append(self._create_text_element(x + 20, field_y, f"{child}:", 14))
+                field_y += 30
+        
+        return elements
+    
+    def render_footer(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
+        """Render footer."""
+        elements = []
+        elements.append(self._create_rectangle(x, y, w, h, self.STROKE_COLOR))
+        elements.append(self._create_text_element(x + w/2 - 30, y + h/2 - 10, comp.label, 14, text_color="#ffffff"))
+        return elements
+    
+    def render_tabs(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
+        """Render tabs."""
+        elements = []
+        
+        if comp.children:
+            tab_width = w / len(comp.children)
+            for idx, tab_name in enumerate(comp.children):
+                tab_x = x + idx * tab_width
+                # Tab background
+                bg_color = self.ACCENT_COLOR if idx == 0 else self.BACKGROUND_COLOR
+                elements.append(self._create_rectangle(tab_x, y, tab_width, 40, bg_color, stroke_width=1))
+                # Tab label
+                text_color = "#ffffff" if idx == 0 else self.TEXT_COLOR
+                elements.append(self._create_text_element(tab_x + 20, y + 15, tab_name, 14, text_color=text_color))
+        
+        # Content area
+        elements.append(self._create_rectangle(x, y + 40, w, h - 40, "#ffffff", stroke_width=1))
+        
+        return elements
+    
+    def render_search_bar(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
+        """Render search bar."""
+        elements = []
+        
+        # Search input
+        input_width = w * 0.7
+        elements.append(self._create_rectangle(x, y, input_width, h, "#ffffff", stroke_width=1))
+        elements.append(self._create_text_element(x + 10, y + h/2 - 10, comp.label, 14))
+        
+        # Search button
+        button_x = x + input_width + 10
+        button_width = w - input_width - 10
+        elements.append(self._create_rectangle(button_x, y, button_width, h, self.ACCENT_COLOR, stroke_width=2))
+        elements.append(self._create_text_element(button_x + 20, y + h/2 - 10, "Search", 14, text_color="#ffffff"))
         
         return elements
     
