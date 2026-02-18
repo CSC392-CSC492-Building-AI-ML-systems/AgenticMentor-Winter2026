@@ -5,11 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 from src.orchestrator.agent_registry import AgentRegistry
-from src.orchestrator.agent_store import AGENT_STORE
+from src.orchestrator.agent_store import AGENT_STORE, get_agent_by_id
 from src.orchestrator.execution_plan import Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
 from src.orchestrator.intent_classifier import IntentClassifier
+
+# Maps agent_id → the phase that becomes active after that agent completes.
+PHASE_TRANSITION_MAP: dict[str, str] = {
+    "requirements_collector": "requirements_complete",
+    "project_architect": "architecture_complete",
+    "execution_planner": "planning_complete",
+    "mockup_agent": "design_complete",
+    "exporter": "exportable",
+}
 
 
 def _make_llm_if_configured() -> Any:
@@ -84,6 +93,10 @@ class MasterOrchestrator:
             state_delta = result.get("state_delta") or {}
             if state_delta:
                 project_state = await self.state.update(session_id, state_delta)
+            # 3.2 Phase transition: update current_phase after agent completes.
+            next_phase = PHASE_TRANSITION_MAP.get(task.agent_id)
+            if next_phase:
+                project_state = await self.state.update(session_id, {"current_phase": next_phase})
             results.append(result)
         message = self._synthesize_response(results)
         return {
@@ -157,6 +170,27 @@ class MasterOrchestrator:
                     }
                 }
                 return {"state_delta": state_delta, "content": raw.get("response") or ""}
+
+            # --- Placeholders: add adapter logic here when agents are implemented ---
+
+            if agent_id == "execution_planner":
+                # TODO: wire ExecutionPlannerAgent when built.
+                # Expected input:  {"architecture": context.get("architecture"), "user_request": user_input}
+                # Expected output: {"state_delta": {"roadmap": {...}}, "content": "..."}
+                return None  # skipped until agent is implemented
+
+            if agent_id == "mockup_agent":
+                # TODO: wire MockupAgent when built.
+                # Expected input:  {"requirements": context.get("requirements"), "architecture": context.get("architecture"), "user_request": user_input}
+                # Expected output: {"state_delta": {"mockups": [...]}, "content": "..."}
+                return None  # skipped until agent is implemented
+
+            if agent_id == "exporter":
+                # TODO: wire ExporterAgent when built.
+                # Expected input:  full context (required_context = ["*"])
+                # Expected output: {"state_delta": {}, "content": "Export ready at <path>"}
+                return None  # skipped until agent is implemented
+
         except Exception:
             return None
         return None

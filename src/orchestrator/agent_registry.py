@@ -30,4 +30,25 @@ class AgentRegistry:
             from src.agents.project_architect import ProjectArchitectAgent
             llm = GeminiClient(model="gemini-2.0-flash", temperature=0.2)
             return ProjectArchitectAgent(state_manager=self._state_manager, llm_client=llm)
+
+        # --- Placeholders: wire real agent classes here when implemented ---
+        if agent_id == "execution_planner":
+            # TODO: import and instantiate ExecutionPlannerAgent when built.
+            # from src.agents.execution_planner import ExecutionPlannerAgent
+            # return ExecutionPlannerAgent(state_manager=self._state_manager)
+            return None  # skipped until agent is implemented
+
+        if agent_id == "mockup_agent":
+            # TODO: import and instantiate MockupAgent when built.
+            # from src.agents.mockup_agent import MockupAgent
+            # return MockupAgent(state_manager=self._state_manager)
+            return None  # skipped until agent is implemented
+
+        if agent_id == "exporter":
+            # TODO: import and instantiate ExporterAgent when built.
+            # from src.agents.exporter import ExporterAgent
+            # return ExporterAgent(state_manager=self._state_manager)
+            return None  # skipped until agent is implemented
+
         return None
+
