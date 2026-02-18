@@ -4,7 +4,6 @@ import asyncio
 import json
 import sys
 from datetime import datetime
-from datetime import datetime
 from pathlib import Path
 
 # Load environment variables from .env (checks project root and parent)
@@ -95,8 +94,8 @@ if RUN_MODE not in ("simple", "complex", "both"):
 # Test Report Writer
 # ============================================================================
 
-class TestReport:
-    """Writes structured test output to both console and a text file."""
+class IntegrationTestReport:
+    """Writes structured test output to both console and a text file (not a pytest test class)."""
 
     def __init__(self, filepath: Path):
         self._filepath = filepath
@@ -163,7 +162,7 @@ class TestReport:
             self._file.write(text + "\n")
 
 
-report = TestReport(OUTPUT_FILE)
+report = IntegrationTestReport(OUTPUT_FILE)
 
 
 # ============================================================================

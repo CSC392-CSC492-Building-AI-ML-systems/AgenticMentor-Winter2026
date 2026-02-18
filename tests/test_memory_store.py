@@ -1,4 +1,11 @@
-import asyncio
+import sys
+from pathlib import Path
+
+# So "from src.*" works when run as script or from another dir
+_root = Path(__file__).resolve().parents[1]
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
 from datetime import datetime
 
 from src.storage.memory_store import default_memory_adapter
@@ -48,6 +55,6 @@ async def test_get_last_messages():
     assert len(last) == 2
 
 
-def test_run_async_tests():
-    asyncio.run(test_save_and_load_project_state())
-    asyncio.run(test_get_last_messages())
+if __name__ == "__main__":
+    import pytest
+    pytest.main([__file__, "-v"])
