@@ -48,7 +48,7 @@ export default function WireframePanel() {
         </div>
       </div>
 
-      <div className="absolute bottom-6 right-6 w-72 border border-[#555] bg-black shadow-2xl">
+      {/* <div className="absolute bottom-6 right-6 w-72 border border-[#555] bg-black shadow-2xl">
         <div className="h-8 border-b border-[#555] flex items-center justify-between px-3 bg-[#050505]">
            <span className="text-[9px] font-bold tracking-widest uppercase text-white">Terminal_Output</span>
            <div className="w-2 h-2 bg-white"></div>
@@ -59,7 +59,7 @@ export default function WireframePanel() {
            <p><span className="text-white">14:02:12</span> <span className="text-white bg-[#222] px-1">[OK] Build success</span></p>
            <div className="w-full h-[1px] bg-[#555] mt-2"></div>
         </div>
-      </div>
+      </div> */}
     </>
   );
 }
