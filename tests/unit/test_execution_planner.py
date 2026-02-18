@@ -121,3 +121,40 @@ def test_plan_task_has_required_context(planner):
         assert isinstance(t, Task)
         assert t.agent_id
         assert isinstance(t.required_context, list)
+
+
+def test_downstream_appended_after_architect(planner):
+    """3.1 downstream: when project_architect is in plan, execution_planner agent is appended."""
+    intent = {
+        "primary_intent": "architecture_design",
+        "requires_agents": ["project_architect"],
+        "confidence": 0.9,
+    }
+    # Requirements present so architect doesn't need upstream; phase allows architect.
+    state = _state(
+        current_phase="architecture_complete",
+        requirements=Requirements(functional=["Login"], constraints=["Python"]),
+    )
+    plan = planner.plan(intent, state)
+    agent_ids = [t.agent_id for t in plan.tasks]
+    assert "project_architect" in agent_ids, "project_architect should be in plan"
+    assert "execution_planner" in agent_ids, "execution_planner should be appended downstream"
+    assert agent_ids.index("project_architect") < agent_ids.index("execution_planner"), (
+        "project_architect must come before execution_planner"
+    )
+
+
+def test_downstream_no_duplicates(planner):
+    """3.1 downstream: no agent appears twice even if multiple upstream agents produce its deps."""
+    intent = {
+        "primary_intent": "architecture_design",
+        "requires_agents": ["project_architect"],
+        "confidence": 0.9,
+    }
+    state = _state(
+        current_phase="architecture_complete",
+        requirements=Requirements(functional=["Auth"]),
+    )
+    plan = planner.plan(intent, state)
+    agent_ids = [t.agent_id for t in plan.tasks]
+    assert len(agent_ids) == len(set(agent_ids)), "No agent should appear twice in the plan"

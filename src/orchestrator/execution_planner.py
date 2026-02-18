@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.orchestrator.agent_store import (
+    AGENT_STORE,
     get_agent_by_id,
     get_producer_for_artifact,
     FULL_PIPELINE_AGENT_IDS,
@@ -60,6 +61,52 @@ def _resolve_upstream(agent_ids: list[str], state: Any) -> list[str]:
     return result
 
 
+def _resolve_downstream(resolved_ids: list[str], state: Any) -> list[str]:
+    """
+    Given a list of agent ids already in the plan, find all agents that
+    *require* any artifact *produced* by those agents and append them in
+    topological order (no duplicates, dependency order preserved).
+
+    Repeats until stable so chains like:
+        project_architect → execution_planner → exporter
+    are fully expanded.
+    """
+    seen: set[str] = set(resolved_ids)
+    result: list[str] = list(resolved_ids)
+
+    changed = True
+    while changed:
+        changed = False
+        # Collect all artifacts produced by agents currently in the plan.
+        produced: set[str] = set()
+        for aid in result:
+            entry = get_agent_by_id(aid)
+            if entry:
+                for art in entry.get("produces") or []:
+                    produced.add(art)
+
+        # Find agents that require any of those artifacts and aren't in plan yet.
+        for entry in AGENT_STORE:
+            aid = entry["id"]
+            if aid in seen:
+                continue
+            requires = entry.get("requires") or []
+            if "*" in requires:
+                # exporter requires everything — only add if ALL artifacts present
+                # (handled separately; skip auto-downstream for wildcard requires)
+                continue
+            if any(art in produced for art in requires):
+                # Prepend any upstream deps this new agent itself needs.
+                new_ids = _resolve_upstream([aid], state)
+                for nid in new_ids:
+                    if nid not in seen:
+                        seen.add(nid)
+                        result.append(nid)
+                        changed = True
+
+    return result
+
+
 class ExecutionPlanner:
     """Builds an ExecutionPlan from intent and project state with dependency resolution."""
 
@@ -74,8 +121,9 @@ class ExecutionPlanner:
             agent_ids = list(FULL_PIPELINE_AGENT_IDS)
 
         phase = getattr(project_state, "current_phase", "initialization")
-        # Optional: filter by phase (skip agents whose phase_compatibility doesn't include phase)
+        # Resolve upstream deps first, then expand downstream.
         resolved = _resolve_upstream(agent_ids, project_state)
+        resolved = _resolve_downstream(resolved, project_state)
 
         plan = ExecutionPlan()
         for aid in resolved:
