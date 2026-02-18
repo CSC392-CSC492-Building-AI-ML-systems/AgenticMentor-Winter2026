@@ -19,6 +19,27 @@ from src.utils.prompt import (
 )
 from src.protocols.schemas import RequirementsState, ChatMessage, MessageRole
 
+# Fields in RequirementsState that must be lists (LLM sometimes returns a single string)
+_REQUIREMENTS_LIST_FIELDS = ("target_users", "key_features", "technical_constraints", "business_goals")
+
+
+def _coerce_requirements_dict(d: dict) -> dict:
+    """Ensure list-typed fields are lists; convert single string to [string]."""
+    out = dict(d)
+    for key in _REQUIREMENTS_LIST_FIELDS:
+        if key not in out:
+            continue
+        val = out[key]
+        if val is None:
+            out[key] = []
+        elif isinstance(val, list):
+            out[key] = list(val)
+        elif isinstance(val, str):
+            out[key] = [val.strip()] if val.strip() else []
+        else:
+            out[key] = [str(val)]
+    return out
+
 
 class AgentState(TypedDict):
     """State for the requirements collection agent."""
@@ -202,7 +223,7 @@ class RequirementsAgent(BaseAgent):
                         current_dict[key] = value
                     merged_count += 1
             
-            state["requirements"] = RequirementsState(**current_dict)
+            state["requirements"] = RequirementsState(**_coerce_requirements_dict(current_dict))
             print(f"Merged {merged_count} requirement updates")
             
         except (json.JSONDecodeError, ValueError) as e:
