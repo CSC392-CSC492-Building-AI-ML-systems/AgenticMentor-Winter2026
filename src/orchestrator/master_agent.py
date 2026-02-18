@@ -52,14 +52,25 @@ class MasterOrchestrator:
         graph_result = await self._graph.ainvoke(initial)
         error = graph_result.get("error")
         if error:
-            return {"message": f"Error: {error}", "state_snapshot": None, "artifacts": []}
+            return {
+                "message": f"Error: {error}",
+                "state_snapshot": None,
+                "artifacts": [],
+                "intent": None,
+                "plan": graph_result.get("plan"),
+                "project_state": None,
+            }
         plan = graph_result.get("plan")
         project_state = graph_result.get("project_state")
+        intent = graph_result.get("intent")
         if not plan or not plan.tasks or not project_state:
             return {
                 "message": "No plan or state.",
                 "state_snapshot": project_state.model_dump() if project_state else None,
                 "artifacts": [],
+                "intent": intent,
+                "plan": plan,
+                "project_state": project_state,
             }
         results = []
         for task in plan.tasks:
@@ -79,6 +90,9 @@ class MasterOrchestrator:
             "message": message,
             "state_snapshot": project_state.model_dump() if project_state else None,
             "artifacts": results,
+            "intent": graph_result.get("intent"),
+            "plan": plan,
+            "project_state": project_state,
         }
 
     def _extract_context(self, project_state: Any, required_context: list[str]) -> dict:
