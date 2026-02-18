@@ -1,20 +1,30 @@
-import { Network } from "lucide-react";
+import { Network, Copy } from "lucide-react";
 
 export default function ArchitecturePanel() {
   return (
     <>
-      <div className="h-10 border-b border-[#444] flex items-center justify-between px-4 bg-black">
+      <div className="h-10 border-b border-[#444] flex items-center justify-between px-4 bg-black flex-shrink-0">
         <div className="flex items-center gap-2 text-white">
           <Network size={12} />
           <span className="text-[10px] tracking-widest uppercase font-bold text-white">Architecture_Graph</span>
         </div>
-        <button className="text-[10px] font-bold border border-[#555] px-2 py-1 text-white hover:bg-white hover:text-black transition-colors">
-          REFRESH_VIEW
-        </button>
+        <div className="flex gap-2">
+          {/* Now that the top right is clear, we can safely add a Copy button! */}
+          <button className="text-[10px] font-bold border border-[#555] px-2 py-1 text-gray-300 hover:bg-white hover:text-black transition-colors flex items-center gap-1">
+            <Copy size={10} /> COPY_MERMAID
+          </button>
+          <button className="text-[10px] font-bold border border-[#555] px-2 py-1 text-white hover:bg-white hover:text-black transition-colors">
+            REFRESH_VIEW
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 p-8 flex flex-col justify-center items-center relative">
-        <div className="border border-[#555] p-12 w-full max-w-lg relative bg-[#030303]">
+      {/* OVERFLOW FIX: Added overflow-auto here to handle scrolling */}
+      <div className="flex-1 p-4 md:p-8 flex flex-col justify-start sm:justify-center items-center relative overflow-auto bg-[#0a0a0a]">
+        
+        {/* OVERFLOW FIX: Added min-w-[450px] so the graph refuses to crush itself */}
+        <div className="border border-[#555] p-8 md:p-12 w-full max-w-lg min-w-[450px] relative bg-[#030303] shadow-2xl my-auto">
+          
           <div className="flex justify-between items-center mb-12">
             <div className="px-4 py-2 bg-white text-black text-xs font-bold border border-white">
               Client_App
@@ -54,7 +64,7 @@ export default function ArchitecturePanel() {
         </div>
       </div>
 
-      <div className="h-32 border-t border-[#444] bg-[#050505] p-4 text-[11px] text-gray-200 overflow-y-auto">
+      <div className="h-32 border-t border-[#444] bg-[#050505] p-4 text-[11px] text-gray-200 overflow-y-auto flex-shrink-0">
         <div className="flex gap-4"><span className="text-white font-bold">01</span><span className="text-white font-bold">sequenceDiagram</span></div>
         <div className="flex gap-4"><span className="text-white font-bold">02</span><span>  Client_App-&gt;&gt;Auth_Gateway: Secure Handshake</span></div>
         <div className="flex gap-4"><span className="text-white font-bold">03</span><span>  Auth_Gateway-&gt;&gt;Identity_Provider: Validate Payload</span></div>
