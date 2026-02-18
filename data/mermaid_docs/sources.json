@@ -1,0 +1,14 @@
+[
+  {
+    "url": "https://mermaid.js.org/syntax/flowchart.html",
+    "diagram_type": "flowchart"
+  },
+  {
+    "url": "https://mermaid.js.org/syntax/entityRelationshipDiagram.html",
+    "diagram_type": "erd"
+  },
+  {
+    "url": "https://mermaid.js.org/intro/syntax-reference.html",
+    "diagram_type": "syntax"
+  }
+]

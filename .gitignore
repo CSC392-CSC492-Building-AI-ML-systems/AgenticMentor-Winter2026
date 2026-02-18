@@ -45,6 +45,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+test_output/
+test_output/
 
 # Logs
 *.log
@@ -54,5 +56,48 @@ htmlcov/
 *.sqlite
 *.sqlite3
 
-# Local project docs
+# Local project docs (changelog for personal/session use only)
+# Local project docs (changelog for personal/session use only)
 docs/changelog.md
+docs/changelog-session-2026-02-08.md
+CHANGELOG.md
+
+# Frontend GitIgnore
+
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Yarn / pnpm / dependencies
+frontend/.pnp
+frontend/.pnp.*
+frontend/.yarn/*
+!frontend/.yarn/patches
+!frontend/.yarn/plugins
+!frontend/.yarn/releases
+!frontend/.yarn/versions
+
+# Testing
+frontend/coverage
+
+# Logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnpm-debug.log*
+
+# Misc
+.DS_Store
+*.pem
+
+# TypeScript
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+
+# Vercel deployment
+frontend/.vercel
