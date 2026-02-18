@@ -1,94 +1,59 @@
-#Psuedocode
+"""Master orchestrator: LangGraph flow (load → classify → build_plan) with optional LangChain LLM intent."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.orchestrator.agent_store import AGENT_STORE
+from src.orchestrator.execution_planner import ExecutionPlanner
+from src.orchestrator.graph import build_orchestrator_graph
+from src.orchestrator.intent_classifier import IntentClassifier
+
+
+def _make_llm_if_configured() -> Any:
+    """Build a LangChain ChatGoogleGenerativeAI if Gemini API key is set; else None."""
+    try:
+        from src.utils.config import get_settings
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        s = get_settings()
+        if getattr(s, "gemini_api_key", None):
+            return ChatGoogleGenerativeAI(
+                model=getattr(s, "model_name", "gemini-2.0-flash"),
+                temperature=getattr(s, "model_temperature", 0.2),
+                api_key=s.gemini_api_key,
+            )
+    except Exception:
+        pass
+    return None
+
 
 class MasterOrchestrator:
-    def __init__(self, state_manager, agent_registry):
+    """Orchestrator using LangGraph (load_state → classify_intent → build_plan) and optional LangChain LLM for intent."""
+
+    def __init__(self, state_manager: Any, agent_registry: Any = None, *, use_llm: bool = True):
         self.state = state_manager
-        self.agents = agent_registry
-        self.intent_classifier = IntentClassifier()
-    
-    async def process_request(self, user_input: str, session_id: str):
-        """
-        Main orchestration loop
-        """
-        # STEP 1: Load current project state
-        project_state = await self.state.load(session_id)
-        
-        # STEP 2: Classify user intent
-        intent = self.intent_classifier.analyze(
-            user_input, 
-            project_state.current_phase
+        self.agents = agent_registry or AGENT_STORE
+        llm = _make_llm_if_configured() if use_llm else None
+        self.intent_classifier = IntentClassifier(llm=llm)
+        self.execution_planner = ExecutionPlanner()
+        self._graph = build_orchestrator_graph(
+            state_manager=self.state,
+            intent_classifier=self.intent_classifier,
+            execution_planner=self.execution_planner,
         )
-        # Returns: {
-        #   "primary_intent": "requirements_gathering",
-        #   "requires_agents": ["requirements_collector"],
-        #   "context_fragments": ["project_goals", "constraints"],
-        #   "confidence": 0.92
-        # }
-        
-        # STEP 3: Route to agent(s)
-        execution_plan = self._build_execution_plan(intent, project_state)
-        
-        # STEP 4: Execute agents sequentially or in parallel
-        results = []
-        for agent_task in execution_plan.tasks:
-            agent = self.agents.get(agent_task.agent_name)
-            
-            # Extract only relevant state fragments (token optimization)
-            context = self._extract_context(
-                project_state, 
-                agent_task.required_context
-            )
-            
-            # Execute agent with inline review
-            output = await agent.execute(
-                input=agent_task.prompt,
-                context=context,
-                tools=agent_task.tools
-            )
-            
-            # Update shared state
-            await self.state.update(session_id, output.state_delta)
-            results.append(output)
-        
-        # STEP 5: Synthesize response
-        response = self._synthesize_response(results)
-        
-        return response
-    
-    def _build_execution_plan(self, intent, state):
+
+    async def process_request(self, user_input: str, session_id: str) -> dict:
         """
-        Decision tree for multi-agent coordination
+        Run the orchestrator LangGraph and return state (intent, plan, project_state, error).
+        Does not execute agents yet (Branch 1: plan only).
         """
-        plan = ExecutionPlan()
-        
-        if intent.primary_intent == "requirements_gathering":
-            plan.add_task(
-                agent="requirements_collector",
-                prompt=intent.user_input,
-                required_context=["existing_requirements"],
-                tools=["question_generator", "gap_analyzer"]
-            )
-        
-        elif intent.primary_intent == "architecture_design":
-            # Parallel execution example
-            plan.add_parallel_tasks([
-                Task(
-                    agent="project_architect",
-                    required_context=["requirements", "constraints"],
-                    tools=["generate_mermaid", "query_vector_store"]
-                ),
-                Task(
-                    agent="mockup_agent",
-                    required_context=["requirements.ui_specs"],
-                    tools=["ui_wireframe"]
-                )
-            ])
-        
-        elif intent.primary_intent == "export":
-            plan.add_task(
-                agent="exporter",
-                required_context=["*"],  # Full state
-                tools=["markdown_formatter", "pdf_exporter"]
-            )
-        
-        return plan
+        initial = {
+            "user_input": user_input or "",
+            "session_id": session_id or "",
+        }
+        result = await self._graph.ainvoke(initial)
+        return dict(result)
+
+    def _build_execution_plan(self, intent: Any, project_state: Any) -> Any:
+        """Build plan from intent and state (used if not using graph)."""
+        return self.execution_planner.plan(intent, project_state)
