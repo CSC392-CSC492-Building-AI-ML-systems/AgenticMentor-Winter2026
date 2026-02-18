@@ -92,6 +92,8 @@ class ProjectState(BaseModel):
     roadmap: Roadmap = Field(default_factory=Roadmap)
     conversation_history: List[dict] = Field(default_factory=list)
     agent_interactions: Dict[str, int] = Field(default_factory=dict)
+    agent_selection_mode: str = "auto"          # "auto" | "manual"
+    selected_agent_id: Optional[str] = None     # set in manual mode
 
     class Config:
         arbitrary_types_allowed = True

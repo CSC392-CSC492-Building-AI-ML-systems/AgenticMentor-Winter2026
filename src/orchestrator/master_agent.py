@@ -53,12 +53,47 @@ class MasterOrchestrator:
             execution_planner=self.execution_planner,
         )
 
-    async def process_request(self, user_input: str, session_id: str) -> dict:
+    async def process_request(
+        self,
+        user_input: str,
+        session_id: str,
+        *,
+        agent_selection_mode: str = "auto",
+        selected_agent_id: str | None = None,
+    ) -> dict:
         """
-        Load state, classify intent, build plan, run each task, synthesize, return response.
+        Load state, classify intent (auto) or use selected agent (manual),
+        build plan, run each task, synthesize, return response.
+
+        Args:
+            user_input: Raw user message.
+            session_id: Session identifier.
+            agent_selection_mode: "auto" (default) or "manual".
+            selected_agent_id: Required when mode is "manual"; the agent to run.
         """
         initial = {"user_input": user_input or "", "session_id": session_id or ""}
-        graph_result = await self._graph.ainvoke(initial)
+
+        # --- 3.4 Manual mode: bypass graph, build plan directly ---
+        if agent_selection_mode == "manual" and selected_agent_id:
+            project_state = await self.state.load(session_id)
+            if project_state is None:
+                return {"message": "Session not found.", "state_snapshot": None, "artifacts": [], "intent": None, "plan": None, "project_state": None, "agent_results": [], "available_agents": []}
+            from src.orchestrator.execution_planner import _resolve_upstream
+            resolved_ids = _resolve_upstream([selected_agent_id], project_state)
+            from src.orchestrator.execution_plan import ExecutionPlan
+            plan = ExecutionPlan()
+            for aid in resolved_ids:
+                entry = get_agent_by_id(aid)
+                plan.add_task(agent_id=aid, required_context=(entry or {}).get("requires") or [])
+            intent = {"primary_intent": "manual", "requires_agents": [selected_agent_id], "confidence": 1.0}
+            available_agents = self._get_available_agents(project_state)
+            # Persist mode selection
+            project_state = await self.state.update(session_id, {"agent_selection_mode": "manual", "selected_agent_id": selected_agent_id})
+            graph_result = {"plan": plan, "project_state": project_state, "intent": intent, "error": None}
+        else:
+            graph_result = await self._graph.ainvoke(initial)
+            project_state = graph_result.get("project_state")
+            available_agents = self._get_available_agents(project_state) if project_state else []
         error = graph_result.get("error")
         if error:
             return {
@@ -68,6 +103,8 @@ class MasterOrchestrator:
                 "intent": None,
                 "plan": graph_result.get("plan"),
                 "project_state": None,
+                "agent_results": [],
+                "available_agents": available_agents if agent_selection_mode == "manual" else [],
             }
         plan = graph_result.get("plan")
         project_state = graph_result.get("project_state")
@@ -80,15 +117,20 @@ class MasterOrchestrator:
                 "intent": intent,
                 "plan": plan,
                 "project_state": project_state,
+                "agent_results": [],
+                "available_agents": available_agents,
             }
         results = []
+        agent_results = []
         for task in plan.tasks:
             agent = self.registry.get_agent(task.agent_id) if hasattr(self.registry, "get_agent") else None
             if agent is None:
+                agent_results.append({"agent_id": task.agent_id, "status": "skipped", "content": "", "state_delta_keys": []})
                 continue
             context = self._extract_context(project_state, task.required_context)
             result = await self._run_agent(task, context, user_input or "", agent)
             if not result:
+                agent_results.append({"agent_id": task.agent_id, "status": "error", "content": "", "state_delta_keys": []})
                 continue
             state_delta = result.get("state_delta") or {}
             if state_delta:
@@ -98,6 +140,14 @@ class MasterOrchestrator:
             if next_phase:
                 project_state = await self.state.update(session_id, {"current_phase": next_phase})
             results.append(result)
+            entry = get_agent_by_id(task.agent_id)
+            agent_results.append({
+                "agent_id": task.agent_id,
+                "agent_name": (entry or {}).get("name", task.agent_id),
+                "status": "success",
+                "content": result.get("content") or "",
+                "state_delta_keys": list(state_delta.keys()),
+            })
         message = self._synthesize_response(results)
         # 3.3 Conversation history: append user + assistant turns and persist.
         # We set the field directly (bypassing StateManager's list-extend merge)
@@ -115,7 +165,21 @@ class MasterOrchestrator:
             "intent": graph_result.get("intent"),
             "plan": plan,
             "project_state": project_state,
+            "agent_results": agent_results,
+            "available_agents": available_agents,
         }
+
+    def _get_available_agents(self, project_state: Any) -> list[dict]:
+        """Return all agents from AGENT_STORE with their metadata for the UI agent picker."""
+        agents = []
+        for entry in AGENT_STORE:
+            agents.append({
+                "agent_id": entry["id"],
+                "agent_name": entry.get("name", entry["id"]),
+                "description": entry.get("description", ""),
+                "phase_compatibility": entry.get("phase_compatibility") or [],
+            })
+        return agents
 
     def _extract_context(self, project_state: Any, required_context: list[str]) -> dict:
         """Build context dict from project_state for the given keys; '*' means full state."""
