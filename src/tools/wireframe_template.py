@@ -18,52 +18,54 @@ TEMPLATES = {
     "auth": TemplateLayout(
         name="auth",
         regions={
-            "header": (0, 0, 100, 15),      # Top 15%
-            "content": (25, 20, 50, 60),    # Centered: x=25%, y=20%, w=50%, h=60%
-            "footer": (0, 85, 100, 15),     # Bottom 15%: y=85% to y=100%
+            "header":       (0,  0,  100, 12),   # Top bar
+            "content":      (20, 13, 60,  58),   # Centered form card
+            "form_content": (20, 13, 60,  58),   # Alias
+            "actions":      (20, 73, 60,  10),   # Buttons — below form, no overlap
+            "footer":       (0,  90, 100, 10),
         }
     ),
     "dashboard": TemplateLayout(
         name="dashboard",
         regions={
-            "navbar": (0, 0, 100, 8),       # Top navbar: 8% height
-            "sidebar": (0, 8, 20, 92),      # Left sidebar: x=0%, y=8%, w=20%, h=92%
-            "main": (20, 8, 80, 92),        # Main content: x=20%, y=8%, w=80%, h=92%
-            "content": (20, 8, 80, 92),     # Alias for main
+            "navbar":       (0,  0,  100, 9),    # Top navbar
+            "sidebar":      (0,  9,  20,  91),   # Left sidebar
+            "main":         (21, 9,  79,  45),   # Card grid — upper main area
+            "content":      (21, 55, 79,  45),   # Table / secondary — lower main area
+            "list_content": (21, 55, 79,  45),   # Alias
         }
     ),
     "list": TemplateLayout(
         name="list",
         regions={
-            "navbar": (0, 0, 100, 8),       # Top navbar: 8%
-            "filters": (0, 8, 100, 12),     # Search/filter: y=8% to y=20% (12% height)
-            "list_content": (0, 20, 100, 80), # List area: y=20% to y=100% (80% height)
-            "content": (0, 20, 100, 80),    # Alias for list_content
-            "main": (0, 20, 100, 80),       # Alias for main
+            "navbar":       (0,  0,  100, 9),
+            "filters":      (0,  9,  100, 11),   # Search bar
+            "list_content": (0,  20, 100, 80),
+            "content":      (0,  20, 100, 80),
+            "main":         (0,  20, 100, 80),
         }
     ),
     "detail": TemplateLayout(
         name="detail",
         regions={
-            "navbar": (0, 0, 100, 8),       # Top navbar: 8%
-            "breadcrumb": (0, 8, 100, 5),   # Breadcrumb: y=8% to y=13% (5% height)
-            "content": (10, 15, 80, 70),    # Content: y=15% to y=85% (70% height with margins)
-            "actions": (10, 90, 80, 10),    # Actions: y=90% to y=100% (10% height with margins)
+            "navbar":    (0,  0,  100, 9),
+            "content":   (5,  11, 90,  73),      # Wide content area
+            "actions":   (5,  86, 90,  10),
         }
     ),
     "form": TemplateLayout(
         name="form",
         regions={
-            "navbar": (0, 0, 100, 8),       # Top navbar: 8%
-            "form_content": (15, 15, 70, 70), # Form: y=15% to y=85% (70% height, centered horizontally)
-            "content": (15, 15, 70, 70),    # Alias for form_content
-            "actions": (15, 85, 70, 10),    # Actions: y=85% to y=95% (10% height)
+            "navbar":       (0,  0,  100, 9),
+            "form_content": (10, 11, 80,  70),
+            "content":      (10, 11, 80,  70),
+            "actions":      (10, 83, 80,  10),
         }
     ),
     "blank": TemplateLayout(
         name="blank",
         regions={
-            "content": (0, 0, 100, 100),    # Full screen
+            "content": (0, 0, 100, 100),
         }
     ),
 }
