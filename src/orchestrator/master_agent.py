@@ -64,7 +64,7 @@ class MasterOrchestrator:
         if intent.primary_intent == "requirements_gathering":
             plan.add_task(
                 agent="requirements_collector",
-                prompt=intent.user_input,
+                prompt=getattr(intent, "user_input", None) or intent.get("user_input"),
                 required_context=["existing_requirements"],
                 tools=["question_generator", "gap_analyzer"]
             )
@@ -73,12 +73,12 @@ class MasterOrchestrator:
             # Parallel execution example
             plan.add_parallel_tasks([
                 Task(
-                    agent="project_architect",
-                    required_context=["requirements", "constraints"],
+                    agent_name="project_architect",
+                    required_context=["requirements", "architecture.tech_stack"],
                     tools=["generate_mermaid", "query_vector_store"]
                 ),
                 Task(
-                    agent="mockup_agent",
+                    agent_name="mockup_agent",
                     required_context=["requirements.ui_specs"],
                     tools=["ui_wireframe"]
                 )
@@ -87,6 +87,7 @@ class MasterOrchestrator:
         elif intent.primary_intent == "export":
             plan.add_task(
                 agent="exporter",
+                prompt=getattr(intent, "user_input", None) or (intent.get("user_input") if isinstance(intent, dict) else None),
                 required_context=["*"],  # Full state
                 tools=["markdown_formatter", "pdf_exporter"]
             )

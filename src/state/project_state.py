@@ -32,6 +32,27 @@ class Milestone(BaseModel):
     target_date: Optional[str] = None
 
 
+class Phase(BaseModel):
+    """A phase in the project execution plan (e.g. Setup, Core Build, Integration)."""
+
+    name: str
+    description: Optional[str] = None
+    order: int = 0
+
+
+class ImplementationTask(BaseModel):
+    """Single implementation task with dependencies and optional external resources."""
+
+    id: str = Field(description="Unique task id for dependency references")
+    title: str
+    description: Optional[str] = None
+    phase_name: Optional[str] = None
+    milestone_name: Optional[str] = None
+    depends_on: List[str] = Field(default_factory=list, description="Ids of tasks that must complete first")
+    external_resources: List[str] = Field(default_factory=list, description="Docs, APIs, or tools to use")
+    order: int = 0
+
+
 class Sprint(BaseModel):
     """Sprint container for execution planning."""
 
@@ -71,11 +92,14 @@ class Mockup(BaseModel):
 
 
 class Roadmap(BaseModel):
-    """Execution planning fragment."""
+    """Execution planning fragment: phases, milestones, ordered tasks, dependencies, resources."""
 
+    phases: List[Phase] = Field(default_factory=list)
     milestones: List[Milestone] = Field(default_factory=list)
+    implementation_tasks: List[ImplementationTask] = Field(default_factory=list)
     sprints: List[Sprint] = Field(default_factory=list)
     critical_path: Optional[str] = None
+    external_resources: List[str] = Field(default_factory=list, description="Project-level external resources")
 
 
 class ProjectState(BaseModel):
