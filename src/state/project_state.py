@@ -78,6 +78,12 @@ class Roadmap(BaseModel):
     critical_path: Optional[str] = None
 
 
+class ExportArtifacts(BaseModel):
+    """Final exported artifacts produced by the exporter agent."""
+    executive_summary: Optional[str] = None
+    markdown_content: Optional[str] = None
+
+
 class ProjectState(BaseModel):
     """Single source of truth for the full project plan."""
 
@@ -92,6 +98,7 @@ class ProjectState(BaseModel):
     roadmap: Roadmap = Field(default_factory=Roadmap)
     conversation_history: List[dict] = Field(default_factory=list)
     agent_interactions: Dict[str, int] = Field(default_factory=dict)
+    export_artifacts: ExportArtifacts = Field(default_factory=ExportArtifacts)
 
     class Config:
         arbitrary_types_allowed = True
