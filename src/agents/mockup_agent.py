@@ -39,7 +39,7 @@ class MockupAgent(BaseAgent):
         print("  [2/3] Compiling to Excalidraw scene...", flush=True)
         excalidraw_json = self.compiler.compile(wireframe_spec)
         
-        # Optional: Export to PNG/SVG
+        # Export artifacts and auto-preview
         print("  [3/3] Exporting artifacts...", flush=True)
         export_paths = await self._export_artifacts(excalidraw_json, wireframe_spec)
         
@@ -125,32 +125,137 @@ Focus on essential MVP screens only (3-5 screens typical).
             return self._default_wireframe_spec(request)
     
     def _default_wireframe_spec(self, request: MockupAgentRequest) -> WireframeSpec:
-        """Fallback wireframe spec."""
+        """Intelligent fallback wireframe spec based on requirements."""
         from src.models.wireframe_spec import ScreenSpec, ComponentSpec, NavigationLink
+        
+        project_name = request.requirements.get("project_name", "MVP Project")
+        functional_reqs = request.requirements.get("functional", [])
+        
+        screens = []
+        navigation = []
+        
+        # Always start with login screen
+        screens.append(ScreenSpec(
+            screen_id="login",
+            screen_name="Login",
+            template="auth",
+            components=[
+                ComponentSpec(type="header", label=f"{project_name}"),
+                ComponentSpec(
+                    type="form",
+                    label="Sign In",
+                    children=["Email", "Password"]
+                ),
+                ComponentSpec(
+                    type="button_group",
+                    label="Actions",
+                    metadata={"button_count": 2}
+                ),
+            ]
+        ))
+        
+        # Add dashboard screen
+        screens.append(ScreenSpec(
+            screen_id="dashboard",
+            screen_name="Dashboard",
+            template="dashboard",
+            components=[
+                ComponentSpec(type="navbar", label=f"{project_name}"),
+                ComponentSpec(
+                    type="sidebar",
+                    label="Navigation",
+                    children=["Dashboard"] + functional_reqs[:3] + ["Settings"]
+                ),
+                ComponentSpec(
+                    type="card_grid",
+                    label="Overview Stats",
+                    metadata={"card_count": min(4, len(functional_reqs) + 1)}
+                ),
+                ComponentSpec(
+                    type="table",
+                    label="Recent Activity",
+                    children=["Date", "Action", "Status"]
+                ),
+            ]
+        ))
+        
+        # Generate screens based on functional requirements
+        for idx, feature in enumerate(functional_reqs[:3]):  # Limit to 3 feature screens
+            feature_slug = feature.lower().replace(" ", "_")[:20]
+            
+            # Determine template based on keywords
+            if any(keyword in feature.lower() for keyword in ["track", "view", "list", "browse"]):
+                template = "list"
+                components = [
+                    ComponentSpec(type="navbar", label=f"{project_name}"),
+                    ComponentSpec(type="search_bar", label="Search"),
+                    ComponentSpec(
+                        type="table",
+                        label=feature,
+                        children=["Name", "Date", "Status", "Actions"]
+                    ),
+                ]
+            elif any(keyword in feature.lower() for keyword in ["create", "add", "new", "edit", "set"]):
+                template = "form"
+                components = [
+                    ComponentSpec(type="navbar", label=f"{project_name}"),
+                    ComponentSpec(
+                        type="form",
+                        label=feature,
+                        children=["Title", "Description", "Date", "Category"]
+                    ),
+                    ComponentSpec(
+                        type="button_group",
+                        label="Actions",
+                        metadata={"button_count": 2}
+                    ),
+                ]
+            else:
+                template = "detail"
+                components = [
+                    ComponentSpec(type="navbar", label=f"{project_name}"),
+                    ComponentSpec(
+                        type="detail_view",
+                        label=feature,
+                        children=["Name", "Description", "Status", "Created"]
+                    ),
+                ]
+            
+            screens.append(ScreenSpec(
+                screen_id=f"{feature_slug}_{idx}",
+                screen_name=feature,
+                template=template,
+                components=components
+            ))
+        
+        # Create navigation flow
+        navigation.append(NavigationLink(
+            from_screen="login",
+            to_screen="dashboard",
+            trigger="Click Login button"
+        ))
+        
+        for idx, feature in enumerate(functional_reqs[:3]):
+            feature_slug = feature.lower().replace(" ", "_")[:20]
+            navigation.append(NavigationLink(
+                from_screen="dashboard",
+                to_screen=f"{feature_slug}_{idx}",
+                trigger=f"Click {feature}"
+            ))
         
         return WireframeSpec(
             version="1.0",
-            project_name=request.requirements.get("project_name", "MVP Project"),
+            project_name=project_name,
             platform=request.platform,
-            screens=[
-                ScreenSpec(
-                    screen_id="home",
-                    screen_name="Home",
-                    template="blank",
-                    components=[
-                        ComponentSpec(type="header", label="Home"),
-                        ComponentSpec(type="hero", label="Welcome to MVP"),
-                    ]
-                )
-            ],
-            navigation=[],
-            design_notes="Default placeholder wireframe"
+            screens=screens,
+            navigation=navigation,
+            design_notes=f"Generated {len(screens)} screens based on {len(functional_reqs)} functional requirements"
         )
     
     async def _export_artifacts(
         self, excalidraw_json: Dict[str, Any], spec: WireframeSpec
     ) -> Dict[str, str]:
-        """Export Excalidraw scene to JSON and PNG."""
+        """Export Excalidraw scene to JSON and auto-preview in browser."""
         import json
         from pathlib import Path
         
@@ -168,117 +273,206 @@ Focus on essential MVP screens only (3-5 screens typical).
             "excalidraw_json": str(json_path),
         }
         
-        # Try to export PNG using Playwright
-        try:
-            png_path = await self._export_to_png(excalidraw_json, output_dir / f"{project_slug}.png")
-            if png_path:
-                export_paths["png"] = str(png_path)
-        except Exception as e:
-            print(f"  [mockup] PNG export skipped: {e}", flush=True)
+        # Auto-preview in browser
+        print("  [3.1/3] Opening preview in browser...", flush=True)
+        preview_info = await self._auto_preview(excalidraw_json, json_path)
+        export_paths.update(preview_info)
         
         return export_paths
     
-    async def _export_to_png(self, excalidraw_json: Dict[str, Any], output_path: Path) -> Optional[Path]:
-        """Export Excalidraw scene to PNG using Playwright."""
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            print("  [mockup] Playwright not installed. Install with: pip install playwright && playwright install", flush=True)
-            return None
+    async def _auto_preview(
+        self, 
+        excalidraw_json: Dict[str, Any], 
+        json_path: Path
+    ) -> Dict[str, str]:
+        """Auto-preview the mockup in browser."""
+        import webbrowser
+        import json
         
-        try:
-            # Create HTML with embedded Excalidraw
-            html_content = f"""
-<!DOCTYPE html>
+        preview_info = {}
+        
+        # Create local HTML preview (editable)
+        html_path = json_path.with_suffix('.html')
+        
+        html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@excalidraw/excalidraw/dist/excalidraw.production.min.js"></script>
+    <title>Mockup Preview - {json_path.stem}</title>
+    <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js"></script>
     <style>
-        body {{ margin: 0; padding: 0; overflow: hidden; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
         #app {{ width: 100vw; height: 100vh; }}
+        .toolbar {{
+            position: fixed;
+            top: 60px;
+            right: 20px;
+            z-index: 999999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }}
+        .btn {{
+            padding: 12px 20px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+            transition: all 0.2s;
+            font-size: 14px;
+            white-space: nowrap;
+        }}
+        .btn:hover {{
+            background: #2563eb;
+            transform: translateX(-2px);
+            box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5);
+        }}
+        .btn-secondary {{
+            background: #64748b;
+            box-shadow: 0 4px 12px rgba(100, 116, 139, 0.4);
+        }}
+        .btn-secondary:hover {{
+            background: #475569;
+            box-shadow: 0 6px 16px rgba(100, 116, 139, 0.5);
+        }}
     </style>
 </head>
 <body>
+    <div class="toolbar">
+        <button class="btn" onclick="downloadJSON()">💾 Download JSON</button>
+        <button class="btn btn-secondary" onclick="exportPNG()">🖼️ Export PNG</button>
+    </div>
     <div id="app"></div>
+    
     <script>
-        const App = () => {{
-            const excalidrawData = {json.dumps(excalidraw_json)};
-            return React.createElement(
-                ExcalidrawLib.Excalidraw,
-                {{
-                    initialData: excalidrawData,
-                    viewModeEnabled: true,
-                    zenModeEnabled: false,
-                    gridModeEnabled: true,
-                }}
-            );
-        }};
+        const initialData = {json.dumps(excalidraw_json)};
+        let excalidrawAPI = null;
         
-        const root = ReactDOM.createRoot(document.getElementById('app'));
-        root.render(React.createElement(App));
+        function initExcalidraw() {{
+            if (typeof React === 'undefined' || 
+                typeof ReactDOM === 'undefined' || 
+                typeof ExcalidrawLib === 'undefined') {{
+                setTimeout(initExcalidraw, 100);
+                return;
+            }}
+            
+            const {{ Excalidraw, exportToBlob }} = ExcalidrawLib;
+            
+            const App = () => {{
+                const [excalidrawAPI, setExcalidrawAPI] = React.useState(null);
+                
+                // Store API globally when available
+                React.useEffect(() => {{
+                    if (excalidrawAPI) {{
+                        window.excalidrawAPI = excalidrawAPI;
+                    }}
+                }}, [excalidrawAPI]);
+                
+                return React.createElement(Excalidraw, {{
+                    initialData: initialData,
+                    ref: setExcalidrawAPI
+                }});
+            }};
+            
+            const root = ReactDOM.createRoot(document.getElementById('app'));
+            root.render(React.createElement(App));
+        }}
         
-        // Signal ready after render
-        setTimeout(() => {{
-            window.excalidrawReady = true;
-        }}, 2000);
+        function downloadJSON() {{
+            if (!window.excalidrawAPI) {{
+                alert('Excalidraw not ready yet. Please wait a moment and try again.');
+                return;
+            }}
+            
+            const elements = window.excalidrawAPI.getSceneElements();
+            const appState = window.excalidrawAPI.getAppState();
+            const files = window.excalidrawAPI.getFiles();
+            
+            const data = {{
+                type: 'excalidraw',
+                version: 2,
+                source: 'https://excalidraw.com',
+                elements: elements,
+                appState: {{
+                    gridSize: appState.gridSize,
+                    viewBackgroundColor: appState.viewBackgroundColor
+                }},
+                files: files
+            }};
+            
+            const blob = new Blob([JSON.stringify(data, null, 2)], {{ type: 'application/json' }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '{json_path.stem}.excalidraw';
+            a.click();
+            URL.revokeObjectURL(url);
+        }}
+        
+        function exportPNG() {{
+            if (!window.excalidrawAPI) {{
+                alert('Excalidraw not ready yet. Please wait a moment and try again.');
+                return;
+            }}
+            
+            const elements = window.excalidrawAPI.getSceneElements();
+            const appState = window.excalidrawAPI.getAppState();
+            const files = window.excalidrawAPI.getFiles();
+            
+            if (ExcalidrawLib.exportToBlob) {{
+                ExcalidrawLib.exportToBlob({{
+                    elements: elements,
+                    appState: appState,
+                    files: files,
+                    mimeType: 'image/png'
+                }}).then(blob => {{
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = '{json_path.stem}.png';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }}).catch(err => {{
+                    console.error('Export failed:', err);
+                    alert('Export failed. Check console for details.');
+                }});
+            }} else {{
+                alert('Export function not available in this Excalidraw version');
+            }}
+        }}
+        
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', initExcalidraw);
+        }} else {{
+            initExcalidraw();
+        }}
     </script>
 </body>
-</html>
-"""
-            
-            import tempfile
-            import json as json_module
-            
-            # Save HTML to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
-                f.write(html_content)
-                html_path = f.name
-            
-            # Calculate viewport size based on content
-            # Find max x and y from elements
-            max_x = max_y = 0
-            for elem in excalidraw_json.get('elements', []):
-                elem_x = elem.get('x', 0) + elem.get('width', 0)
-                elem_y = elem.get('y', 0) + elem.get('height', 0)
-                max_x = max(max_x, elem_x)
-                max_y = max(max_y, elem_y)
-            
-            # Add padding
-            viewport_width = int(max_x + 200)
-            viewport_height = int(max_y + 200)
-            
-            # Render with Playwright
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page(
-                    viewport={'width': viewport_width, 'height': viewport_height}
-                )
-                
-                await page.goto(f'file://{html_path}')
-                
-                # Wait for Excalidraw to load
-                await page.wait_for_function('window.excalidrawReady === true', timeout=10000)
-                
-                # Take screenshot
-                await page.screenshot(path=str(output_path), full_page=True)
-                await browser.close()
-            
-            # Clean up temp file
-            import os
-            os.unlink(html_path)
-            
-            print(f"  [mockup] PNG exported to: {output_path}", flush=True)
-            return output_path
-            
+</html>"""
+        
+        with open(html_path, 'w') as f:
+            f.write(html_content)
+        
+        # Convert to absolute path
+        html_path_abs = html_path.resolve()
+        preview_info["preview_html"] = str(html_path_abs)
+        
+        # Auto-open in browser
+        try:
+            webbrowser.open(f'file://{html_path_abs}')
+            print(f"  ✓ Preview opened in browser: {html_path.name}", flush=True)
         except Exception as e:
-            print(f"  [mockup] PNG export failed: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-            return None
+            print(f"  ⚠ Could not auto-open browser: {e}", flush=True)
+            print(f"  → Open manually: file://{html_path_abs}", flush=True)
+        
+        return preview_info
     
     def _generate_summary(self, spec: WireframeSpec) -> str:
         """Generate human-readable summary."""
@@ -296,8 +490,8 @@ Focus on essential MVP screens only (3-5 screens typical).
                 screen_name=screen.screen_name,
                 screen_id=screen.screen_id,
                 wireframe_spec=screen.model_dump(),
-                excalidraw_scene=excalidraw_json,  # For now, store full scene
-                screenshot_path=export_paths.get("png"),
+                excalidraw_scene=excalidraw_json,
+                screenshot_path=export_paths.get("preview_html"),  # Store HTML preview path
                 template_used=screen.template,
                 interactions=[nav.trigger for nav in spec.navigation if nav.from_screen == screen.screen_id],
             )

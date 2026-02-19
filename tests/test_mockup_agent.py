@@ -27,6 +27,101 @@ def print_section(title: str):
     print("=" * 80 + "\n")
 
 
+def _create_preview_html(excalidraw_json: dict, html_path: Path) -> None:
+    """Create HTML preview file and open in browser."""
+    import webbrowser
+    
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Mockup Preview - {html_path.stem}</title>
+    <link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/index.css" />
+    <script>
+        window.EXCALIDRAW_ASSET_PATH = "https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/";
+    </script>
+    <script type="importmap">
+    {{
+        "imports": {{
+            "react": "https://esm.sh/react@18.2.0",
+            "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
+        }}
+    }}
+    </script>
+    <style>
+        body {{ margin: 0; padding: 0; font-family: system-ui; }}
+        #app {{ width: 100vw; height: 100vh; }}
+        .info-banner {{
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #3b82f6;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            z-index: 9999;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }}
+    </style>
+</head>
+<body>
+    <div class="info-banner">
+        ✓ Mockup Preview - You can edit this wireframe directly!
+    </div>
+    <div id="app"></div>
+    
+    <script type="module">
+        import {{ Excalidraw }} from "https://esm.sh/@excalidraw/excalidraw@0.18.0";
+        import {{ createRoot }} from "https://esm.sh/react-dom@18.2.0/client";
+        import React from "https://esm.sh/react@18.2.0";
+        
+        const excalidrawData = {json.dumps(excalidraw_json)};
+        
+        const App = () => {{
+            return React.createElement(Excalidraw, {{
+                initialData: excalidrawData,
+                viewModeEnabled: false,
+                zenModeEnabled: false,
+                gridModeEnabled: true,
+            }});
+        }};
+        
+        const root = createRoot(document.getElementById('app'));
+        root.render(React.createElement(App));
+        
+        // Hide info banner after 3 seconds
+        setTimeout(() => {{
+            const banner = document.querySelector('.info-banner');
+            if (banner) {{
+                banner.style.transition = 'opacity 0.5s';
+                banner.style.opacity = '0';
+                setTimeout(() => banner.remove(), 500);
+            }}
+        }}, 3000);
+    </script>
+</body>
+</html>"""
+    
+    with open(html_path, 'w') as f:
+        f.write(html_content)
+    
+    # Convert to absolute path
+    html_path_abs = html_path.resolve()
+    print(f"✓ Preview HTML created: {html_path_abs}")
+    
+    try:
+        webbrowser.open(f'file://{html_path_abs}')
+        print(f"✓ Opening in browser...")
+    except Exception as e:
+        print(f"⚠ Could not auto-open: {e}")
+        print(f"  → Open manually: file://{html_path_abs}")
+
+
+
 async def test_compiler_only():
     """Test 1: Compiler only (no LLM) - Hardcoded WireframeSpec"""
     print_section("TEST 1: Excalidraw Compiler (No LLM)")
@@ -140,7 +235,10 @@ async def test_compiler_only():
         json.dump(excalidraw_json, f, indent=2)
     
     print(f"\n✓ Saved to: {output_file}")
-    print(f"  → Open this file at https://excalidraw.com to view the wireframes")
+    
+    # Create HTML preview and auto-open
+    html_file = output_file.with_suffix('.html')
+    _create_preview_html(excalidraw_json, html_file)
     
     # Show element breakdown
     element_types = {}
@@ -152,8 +250,8 @@ async def test_compiler_only():
     for elem_type, count in sorted(element_types.items()):
         print(f"    - {elem_type}: {count}")
     
-    # Note: PNG export is done in the full agent test
-    print("\n  Note: PNG export test is in Test 2 (MockupAgent)")
+    # Note: HTML preview is done in the full agent test
+    print("\n  Note: Auto-preview test is in Test 2 (MockupAgent)")
     
     return excalidraw_json
 
@@ -218,14 +316,14 @@ async def test_agent_fallback_mode():
         print("\n  Exported files:")
         for key, path in response['export_paths'].items():
             print(f"    - {key}: {path}")
-            # Check if PNG was generated
-            if key == "png":
+            # Check if HTML preview was generated
+            if key == "preview_html":
                 from pathlib import Path
                 if Path(path).exists():
-                    print(f"      ✓ PNG file created successfully!")
+                    print(f"      ✓ HTML preview created successfully!")
                     print(f"      Size: {Path(path).stat().st_size} bytes")
                 else:
-                    print(f"      ⚠️ PNG file not found (Playwright may not be installed)")
+                    print(f"      ⚠️ HTML preview file not found")
     
     # Show state delta
     mockup_entries = response['state_delta']['mockups']
@@ -338,14 +436,14 @@ async def test_agent_with_llm():
             print("\n  Exported files:")
             for key, path in response['export_paths'].items():
                 print(f"    - {key}: {path}")
-                # Check if PNG was generated
-                if key == "png":
+                # Check if HTML preview was generated
+                if key == "preview_html":
                     from pathlib import Path
                     if Path(path).exists():
-                        print(f"      ✓ PNG file created successfully!")
+                        print(f"      ✓ HTML preview created successfully!")
                         print(f"      Size: {Path(path).stat().st_size} bytes")
                     else:
-                        print(f"      ⚠️ PNG file not found (Playwright may not be installed)")
+                        print(f"      ⚠️ HTML preview file not found")
         
         return response
         
@@ -445,10 +543,10 @@ async def main():
         print_section("✅ ALL TESTS COMPLETED")
         
         print("\n📋 NEXT STEPS:")
-        print("  1. Check outputs/mockups/test/ for generated .excalidraw files")
-        print("  2. Open files at https://excalidraw.com to view wireframes")
-        print("  3. To test with LLM: Add GEMINI_API_KEY to .env")
-        print("  4. To enable PNG export: pip3 install playwright && playwright install chromium")
+        print("  1. Check outputs/mockups/test/ for generated files")
+        print("  2. .excalidraw files can be opened at https://excalidraw.com")
+        print("  3. .html files contain interactive previews (auto-opened in browser)")
+        print("  4. To test with LLM: Add GEMINI_API_KEY to .env")
         print("\n")
         
     except Exception as e:
