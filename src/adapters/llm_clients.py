@@ -22,8 +22,17 @@ class LLMClient(Protocol):
 class GeminiClient:
     """LangChain adapter for Google Gemini models."""
 
-    def __init__(self, model: str = "gemini-1.5-pro", temperature: float = 0.0):
-        self.llm = ChatGoogleGenerativeAI(model=model, temperature=temperature)
+    def __init__(
+        self,
+        model: str = "gemini-1.5-pro",
+        temperature: float = 0.0,
+        google_api_key: str | None = None,
+    ):
+        self.llm = ChatGoogleGenerativeAI(
+            model=model,
+            temperature=temperature,
+            google_api_key=google_api_key,
+        )
 
     async def ainvoke(self, prompt: str) -> str:
         msg = await self.llm.ainvoke(prompt)

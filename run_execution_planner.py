@@ -2,14 +2,21 @@
 
 import asyncio
 import json
+import sys
+import io
 from src.agents.execution_planner_agent import ExecutionPlannerAgent
-from src.state.project_state import ArchitectureDefinition
+from src.utils.config import settings
+
+# Fix Windows console encoding for Unicode characters
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 
 async def main():
-    # Create the agent (no LLM needed - uses fallback)
-    agent = ExecutionPlannerAgent()
-    
+    print(f"Initializing Execution Planner Agent with LLM (Gemini {settings.model_name})...")
+    # state_manager is optional; omit for standalone testing
+    agent = ExecutionPlannerAgent(state_manager=None, llm_client=None)
+
     # Example architecture from Architect agent output
     architecture = {
         "tech_stack": {
@@ -24,8 +31,8 @@ async def main():
         ],
         "deployment_strategy": "AWS ECS with RDS"
     }
-    
-    # Context with architecture (required input)
+
+    # Context with architecture (required input) and requirements
     context = {
         "architecture": architecture,
         "requirements": {
@@ -33,54 +40,73 @@ async def main():
             "constraints": ["Python backend"]
         }
     }
-    
-    # Run the agent
+
+    # Run the agent via execute() — delegates to process() internally
     print("Running Execution Planner Agent...")
     output = await agent.execute(
-        input={},  # Can be empty or contain user request
+        input={},
         context=context,
         tools=[]
     )
-    
+
     # Print results
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("EXECUTION PLAN OUTPUT")
-    print("="*60)
-    
-    execution_plan = output.content.get("execution_plan", {})
-    
-    print(f"\nPhases ({len(execution_plan.get('phases', []))}):")
-    for phase in execution_plan.get("phases", []):
-        print(f"  - {phase.get('name')}: {phase.get('description', '')}")
-    
-    print(f"\nMilestones ({len(execution_plan.get('milestones', []))}):")
-    for milestone in execution_plan.get("milestones", []):
-        print(f"  - {milestone.get('name')}: {milestone.get('description', '')}")
-    
-    print(f"\nImplementation Tasks ({len(execution_plan.get('implementation_tasks', []))}):")
-    for task in execution_plan.get("implementation_tasks", []):
+    print("=" * 60)
+
+    content = output.content or {}
+    summary = content.get("summary", "")
+    if summary:
+        print(f"\nSummary: {summary}")
+
+    roadmap = content.get("roadmap") or content.get("execution_plan") or {}
+
+    print(f"\nPhases ({len(roadmap.get('phases', []))}):")
+    for phase in roadmap.get("phases", []):
+        print(f"  [{phase.get('order', '?')}] {phase.get('name')}: {phase.get('description', '')}")
+
+    print(f"\nMilestones ({len(roadmap.get('milestones', []))}):")
+    for milestone in roadmap.get("milestones", []):
+        date = milestone.get("target_date") or "TBD"
+        print(f"  - {milestone.get('name')} ({date}): {milestone.get('description', '')}")
+
+    print(f"\nImplementation Tasks ({len(roadmap.get('implementation_tasks', []))}):")
+    for task in roadmap.get("implementation_tasks", []):
         deps = ", ".join(task.get("depends_on", [])) or "none"
         print(f"  [{task.get('id')}] {task.get('title')}")
-        print(f"      Phase: {task.get('phase_name')}")
+        print(f"      Phase: {task.get('phase_name')}  |  Milestone: {task.get('milestone_name') or 'N/A'}")
         print(f"      Depends on: {deps}")
         if task.get("external_resources"):
             print(f"      Resources: {', '.join(task.get('external_resources', []))}")
-    
-    if execution_plan.get("critical_path"):
-        print(f"\nCritical Path: {execution_plan.get('critical_path')}")
-    
-    print(f"\nExternal Resources: {', '.join(execution_plan.get('external_resources', []))}")
-    
-    print("\n" + "="*60)
-    print("STATE DELTA (for state manager):")
-    print("="*60)
-    print(json.dumps(output.state_delta, indent=2))
-    
-    print("\n" + "="*60)
+
+    print(f"\nSprints ({len(roadmap.get('sprints', []))}):")
+    for sprint in roadmap.get("sprints", []):
+        print(f"  {sprint.get('name')}: {sprint.get('goal', '')} ({len(sprint.get('tasks', []))} tasks)")
+
+    if roadmap.get("critical_path"):
+        critical_path = roadmap.get("critical_path", "").replace("→", "->")
+        print(f"\nCritical Path: {critical_path}")
+
+    if roadmap.get("external_resources"):
+        print(f"\nExternal Resources: {', '.join(roadmap.get('external_resources', []))}")
+
+    print("\n" + "=" * 60)
+    print("STATE DELTA (keys written to state manager):")
+    print("=" * 60)
+    for key in output.state_delta:
+        value = output.state_delta[key]
+        if isinstance(value, list):
+            print(f"  {key}: [{len(value)} items]")
+        elif isinstance(value, dict):
+            print(f"  {key}: {{...}}")
+        else:
+            print(f"  {key}: {value}")
+
+    print("\n" + "=" * 60)
     print("METADATA:")
-    print("="*60)
+    print("=" * 60)
     print(json.dumps(output.metadata, indent=2))
-    
+
     return output
 
 
