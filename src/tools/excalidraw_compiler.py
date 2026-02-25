@@ -131,25 +131,39 @@ class ExcalidrawCompiler:
         # 3. Get template layout
         template = TEMPLATES.get(screen.template, TEMPLATES["blank"])
         
-        # 4. Render components using template regions
+        # 4. Group components by region, then stack within each region.
+        #    This prevents multiple components from overlapping each other
+        #    when they map to the same region.
+        from collections import OrderedDict
+        region_groups: dict = OrderedDict()
         for component_spec in screen.components:
             region_name = self._map_component_to_region(component_spec.type, template)
             if region_name not in template.regions:
-                region_name = "content"  # fallback
-            
+                region_name = "content"
+            region_groups.setdefault(region_name, []).append(component_spec)
+        
+        for region_name, comps in region_groups.items():
             region_x_pct, region_y_pct, region_w_pct, region_h_pct = template.regions[region_name]
             
-            # Convert percentages to absolute coordinates
-            comp_x = x_offset + (region_x_pct / 100) * self.SCREEN_WIDTH
-            comp_y = y_offset + (region_y_pct / 100) * self.SCREEN_HEIGHT
-            comp_w = (region_w_pct / 100) * self.SCREEN_WIDTH
-            comp_h = (region_h_pct / 100) * self.SCREEN_HEIGHT
+            reg_x = x_offset + (region_x_pct / 100) * self.SCREEN_WIDTH
+            reg_y = y_offset + (region_y_pct / 100) * self.SCREEN_HEIGHT
+            reg_w = (region_w_pct / 100) * self.SCREEN_WIDTH
+            reg_h = (region_h_pct / 100) * self.SCREEN_HEIGHT
             
-            # Render component
-            comp_elements = self._render_component(
-                component_spec, comp_x, comp_y, comp_w, comp_h
-            )
-            elements.extend(comp_elements)
+            if len(comps) == 1:
+                # Single occupant — give it the full region
+                elements.extend(self._render_component(comps[0], reg_x, reg_y, reg_w, reg_h))
+            else:
+                # Multiple components share the region — stack them vertically.
+                # Give proportional slices: equal shares, min 80px per slice.
+                slice_h = max(80, reg_h / len(comps))
+                for i, comp_spec in enumerate(comps):
+                    comp_y = reg_y + i * slice_h
+                    # Clip so we never render outside the screen frame
+                    if comp_y >= y_offset + self.SCREEN_HEIGHT:
+                        break
+                    actual_h = min(slice_h, (y_offset + self.SCREEN_HEIGHT) - comp_y)
+                    elements.extend(self._render_component(comp_spec, reg_x, comp_y, reg_w, actual_h))
         
         return elements
     
@@ -358,14 +372,22 @@ class ExcalidrawCompiler:
         return elements
     
     def render_card_grid(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
-        """Render card grid (sketch wireframe style)."""
+        """Render card grid — caps card count based on available height to prevent overflow."""
         elements = []
         
         card_count = comp.metadata.get("card_count", 3) if comp.metadata else 3
         cards_per_row = 3
-        card_margin = 32
+        card_margin = 24
         card_width = (w - (cards_per_row + 1) * card_margin) / cards_per_row
-        card_height = 150
+        
+        # Scale card height to fit — never overflow the region
+        max_rows = max(1, int((h - card_margin) / (120 + card_margin)))
+        max_cards = max_rows * cards_per_row
+        card_count = min(card_count, max_cards)
+        
+        # Fit card height to exactly fill available rows
+        num_rows = max(1, (card_count + cards_per_row - 1) // cards_per_row)
+        card_height = min(150, max(80, int((h - (num_rows + 1) * card_margin) / num_rows)))
         
         for idx in range(card_count):
             row = idx // cards_per_row
@@ -379,32 +401,35 @@ class ExcalidrawCompiler:
                 stroke_width=2, fill_style="solid"
             ))
             
-            # Card title (larger text)
+            # Card title
+            title_font = self.FONT_SM if card_height < 110 else self.FONT_MD
             elements.append(self._create_text_element(
-                card_x + self.PADDING_MD, card_y + self.PADDING_MD, 
-                f"{comp.label} {idx + 1}", self.FONT_MD, 
+                card_x + self.PADDING_SM, card_y + self.PADDING_SM, 
+                f"{comp.label} {idx + 1}", title_font, 
                 text_color=self.STROKE_COLOR, font_family=self.FONT_HEADING
             ))
             
             # Separator line
+            sep_y = card_y + self.PADDING_SM + title_font + 4
             elements.append(self._create_line(
-                card_x + self.PADDING_MD, card_y + self.PADDING_MD + 30,
-                card_x + card_width - self.PADDING_MD, card_y + self.PADDING_MD + 30,
+                card_x + self.PADDING_SM, sep_y,
+                card_x + card_width - self.PADDING_SM, sep_y,
                 stroke_color=self.STROKE_LIGHT
             ))
             
-            # Large metric number (hand-drawn style)
-            elements.append(self._create_text_element(
-                card_x + self.PADDING_MD, card_y + 70, 
-                f"{(idx + 1) * 123}", self.FONT_XL, 
-                text_color=self.STROKE_COLOR, font_family=self.FONT_HEADING
-            ))
-            
-            # Small label below
-            elements.append(self._create_text_element(
-                card_x + self.PADDING_MD, card_y + 110, 
-                "Units", self.FONT_SM, text_color=self.TEXT_LIGHT
-            ))
+            # Metric number — only if there's room
+            if card_height >= 100:
+                metric_font = self.FONT_LG if card_height < 130 else self.FONT_XL
+                elements.append(self._create_text_element(
+                    card_x + self.PADDING_SM, sep_y + 8,
+                    f"{(idx + 1) * 123}", metric_font, 
+                    text_color=self.STROKE_COLOR, font_family=self.FONT_HEADING
+                ))
+                if card_height >= 120:
+                    elements.append(self._create_text_element(
+                        card_x + self.PADDING_SM, card_y + card_height - 22,
+                        "units", self.FONT_XS, text_color=self.TEXT_LIGHT
+                    ))
         
         return elements
     
@@ -417,10 +442,11 @@ class ExcalidrawCompiler:
         button_height = 48
         button_margin = 20
         
-        # Center buttons
+        # Center horizontally; align near top of region (not vertical center)
+        # so buttons don't float in empty space when the region is tall
         total_width = button_count * button_width + (button_count - 1) * button_margin
         start_x = x + (w - total_width) / 2
-        button_y = y + (h - button_height) / 2
+        button_y = y + self.PADDING_MD
         
         button_labels = ["Submit", "Cancel", "Reset", "Delete"]
         

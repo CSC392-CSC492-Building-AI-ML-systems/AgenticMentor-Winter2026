@@ -30,9 +30,10 @@ TEMPLATES = {
         regions={
             "navbar":       (0,  0,  100, 9),    # Top navbar
             "sidebar":      (0,  9,  20,  91),   # Left sidebar
-            "main":         (21, 9,  79,  45),   # Card grid — upper main area
-            "content":      (21, 55, 79,  45),   # Table / secondary — lower main area
-            "list_content": (21, 55, 79,  45),   # Alias
+            "main":         (21, 9,  79,  46),   # Card grid — upper main area
+            "content":      (21, 55, 79,  36),   # Table / secondary — mid area
+            "list_content": (21, 55, 79,  36),   # Alias
+            "actions":      (21, 91, 79,  9),    # Button strip — bottom, no overlap
         }
     ),
     "list": TemplateLayout(
@@ -40,9 +41,10 @@ TEMPLATES = {
         regions={
             "navbar":       (0,  0,  100, 9),
             "filters":      (0,  9,  100, 11),   # Search bar
-            "list_content": (0,  20, 100, 80),
-            "content":      (0,  20, 100, 80),
-            "main":         (0,  20, 100, 80),
+            "list_content": (0,  20, 100, 71),   # Reduced to make room for actions
+            "content":      (0,  20, 100, 71),
+            "main":         (0,  20, 100, 71),
+            "actions":      (0,  91, 100, 9),    # Button strip — bottom
         }
     ),
     "detail": TemplateLayout(
