@@ -223,11 +223,15 @@ def _mockups_to_markdown(mockups: Any) -> str:
                 lang = "text"
             lines.append("  - Wireframe:")
             lines.append("")
+            # Cap size so PDF stays readable (Excalidraw JSON is often one long line)
+            max_wireframe_chars = 2000
+            truncated = len(wireframe_code) > max_wireframe_chars
+            wireframe_preview = wireframe_code[:max_wireframe_chars] if truncated else wireframe_code
             lines.append("```" + lang)
-            for wline in wireframe_code.split("\n")[:30]:
+            for wline in wireframe_preview.split("\n")[:30]:
                 lines.append(wline)
-            if wireframe_code.count("\n") >= 30:
-                lines.append("... (truncated)")
+            if truncated or wireframe_code.count("\n") >= 30:
+                lines.append("... (truncated; full wireframe in app)")
             lines.append("```")
     lines.append("")
     return "\n".join(lines)
@@ -308,7 +312,7 @@ class ExporterAgent(BaseAgent):
         roadmap = self._extract_fragment(payload.get("roadmap", payload.get("plan", {})))
         mockups = self._extract_fragment(payload.get("mockups", payload.get("mockup", {})))
 
-        executive_summary = await self._generate_executive_summary(project_name, reqs, arch)
+        executive_summary = await self._generate_executive_summary(project_name, reqs, arch, roadmap, mockups)
         print("  [1/2] Compiling Markdown Artifacts...", flush=True)
         raw_markdown = compile_markdown_document(
             project_name=project_name,
@@ -350,14 +354,31 @@ class ExporterAgent(BaseAgent):
             },
         }
 
-    async def _generate_executive_summary(self, project_name: str, reqs: dict, arch: dict) -> str:
-        """Helper to generate a concise summary via LLM."""
+    async def _generate_executive_summary(
+        self,
+        project_name: str,
+        reqs: dict,
+        arch: dict,
+        roadmap: Any = None,
+        mockups: Any = None,
+    ) -> str:
+        """Helper to generate a concise summary via LLM. Uses a slice of each payload section."""
         if self.llm_client is None:
             return "Executive summary unavailable (LLM not configured)."
         system_prompt = "You are a Senior Technical Project Manager. Write a highly concise, 2-paragraph executive summary of the following project."
-        reqs_str = json.dumps(reqs)[:1500]
-        arch_str = json.dumps(arch)[:1500]
-        user_prompt = f"Project Name: {project_name}\nRequirements: {reqs_str}\nArchitecture: {arch_str}"
+        # Include a bit of every available section (truncated so prompt stays reasonable)
+        max_chars = 1000
+        reqs_str = json.dumps(reqs)[:max_chars] if reqs else "(none)"
+        arch_str = json.dumps(arch)[:max_chars] if arch else "(none)"
+        roadmap_str = json.dumps(roadmap)[:max_chars] if roadmap else "(none)"
+        mockups_str = json.dumps(mockups)[:max_chars] if mockups else "(none)"
+        user_prompt = (
+            f"Project Name: {project_name}\n"
+            f"Requirements: {reqs_str}\n"
+            f"Architecture: {arch_str}\n"
+            f"Roadmap: {roadmap_str}\n"
+            f"Mockups: {mockups_str}"
+        )
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
         try:
             print("  [LLM] Generating Executive Summary...", flush=True)
