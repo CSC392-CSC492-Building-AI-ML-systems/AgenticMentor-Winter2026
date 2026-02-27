@@ -1,14 +1,15 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   body {
-    background-color: #000000;
-    color: #ffffff; /* Forces default text to pure white */
+    /* Replaced hardcoded black/white with dynamic Tailwind classes */
+    @apply bg-white text-black dark:bg-black dark:text-white transition-colors duration-200;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
   
   ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: #000000; }
-  ::-webkit-scrollbar-thumb { background: #555555; }
-  ::-webkit-scrollbar-thumb:hover { background: #888888; } /* Brighter scrollbar hover */
+  ::-webkit-scrollbar-track { @apply bg-gray-100 dark:bg-black transition-colors; }
+  ::-webkit-scrollbar-thumb { @apply bg-gray-300 dark:bg-[#555] transition-colors; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-gray-400 dark:bg-[#888] transition-colors; }
 }
