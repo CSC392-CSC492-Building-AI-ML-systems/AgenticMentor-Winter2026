@@ -104,4 +104,5 @@ frontend/next-env.d.ts
 frontend/.vercel
 
 # Excalidraw
+outputs/
 outputs/mockups/
