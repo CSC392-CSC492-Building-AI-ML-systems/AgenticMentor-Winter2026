@@ -156,8 +156,10 @@ class MasterOrchestrator:
         new_history.append({"role": "user", "content": user_input or ""})
         new_history.append({"role": "assistant", "content": message})
         project_state.conversation_history = new_history
-        await self.state.db.save(session_id, project_state.model_dump())
-        self.state.cache[session_id] = project_state
+        if hasattr(self.state, "db") and hasattr(self.state.db, "save"):
+            await self.state.db.save(session_id, project_state.model_dump())
+        if hasattr(self.state, "cache"):
+            self.state.cache[session_id] = project_state
         return {
             "message": message,
             "state_snapshot": project_state.model_dump() if project_state else None,

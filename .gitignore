@@ -102,3 +102,6 @@ frontend/next-env.d.ts
 
 # Vercel deployment
 frontend/.vercel
+
+# Excalidraw
+outputs/mockups/
