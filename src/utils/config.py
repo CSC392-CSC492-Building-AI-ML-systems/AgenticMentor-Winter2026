@@ -1,5 +1,8 @@
+"""Configuration utilities for environment-driven settings."""
+from __future__ import annotations
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
@@ -23,6 +26,11 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+def load_config() -> dict:
+    """Load configuration values from environment variables."""
+    return {
+        "app_env": os.getenv("APP_ENV", "development"),
+    }
 
 @lru_cache()
 def get_settings() -> Settings:

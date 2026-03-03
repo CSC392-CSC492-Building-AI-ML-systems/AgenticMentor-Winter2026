@@ -80,6 +80,16 @@ The agent should construct a prompt to select the best technology.
 * **System Prompt:** "You are a Senior Software Architect. Analyze the following requirements and output a JSON object defining the Frontend, Backend, Database, and DevOps stack. Justify each choice."
 * **Constraint:** Must adhere to any constraints in `ProjectState` (e.g., "Must use Python").
 
+### Step 4.1.1: LLM Integration (LangChain Adapters)
+Use the shared adapters in `src/adapters/llm_clients.py` and inject them into the agent via `llm_client`.
+
+```python
+from src.adapters.llm_clients import GeminiClient, ClaudeClient, DeepSeekClient, OpenAIClient
+from src.agents.project_architect import ProjectArchitectAgent
+
+architect = ProjectArchitectAgent(state_manager=state_manager, llm_client=GeminiClient())
+```
+
 ### Step 4.2: Diagram Generation Strategy
 Do **not** generate the diagrams directly in the `process` method's main LLM call. Instead, delegate to the `DiagramGenerator` tool methods.
 
