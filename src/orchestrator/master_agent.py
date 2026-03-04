@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from src.orchestrator.agent_registry import AgentRegistry
@@ -128,7 +129,7 @@ class MasterOrchestrator:
                 agent_results.append({"agent_id": task.agent_id, "status": "skipped", "content": "", "state_delta_keys": []})
                 continue
             context = self._extract_context(project_state, task.required_context)
-            result = await self._run_agent(task, context, user_input or "", agent)
+            result = await self._run_agent(task, context, user_input or "", agent, project_state=project_state)
             if not result:
                 agent_results.append({"agent_id": task.agent_id, "status": "error", "content": "", "state_delta_keys": []})
                 continue
@@ -199,7 +200,42 @@ class MasterOrchestrator:
                 out[key] = val.model_dump() if hasattr(val, "model_dump") else val
         return out
 
-    async def _run_agent(self, task: Task, context: dict, user_input: str, agent: Any) -> dict | None:
+    def _to_dict(self, value: Any) -> dict:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return dict(value)
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        return {}
+
+    def _normalize_mockups(self, entries: list[Any]) -> list[dict]:
+        normalized: list[dict] = []
+        for entry in entries:
+            item = self._to_dict(entry)
+            if not item.get("screen_name") and item.get("screen_id"):
+                item["screen_name"] = item["screen_id"]
+            if "interactions" not in item or item.get("interactions") is None:
+                item["interactions"] = []
+            if not item.get("wireframe_code"):
+                scene = item.get("excalidraw_scene")
+                spec = item.get("wireframe_spec")
+                if scene is not None:
+                    item["wireframe_code"] = json.dumps(scene, default=str)
+                elif spec is not None:
+                    item["wireframe_code"] = json.dumps(spec, default=str)
+            normalized.append(item)
+        return normalized
+
+    async def _run_agent(
+        self,
+        task: Task,
+        context: dict,
+        user_input: str,
+        agent: Any,
+        *,
+        project_state: Any | None = None,
+    ) -> dict | None:
         """Run agent for task; return { state_delta, content } or None."""
         agent_id = task.agent_id
         try:
@@ -208,7 +244,7 @@ class MasterOrchestrator:
                 req_dict = req if isinstance(req, dict) else (req.model_dump() if hasattr(req, "model_dump") else {})
                 input_data = {
                     "requirements": req_dict,
-                    "existing_architecture": context.get("architecture"),
+                    "existing_architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
                     "user_request": user_input,
                 }
                 raw = await agent.process(input_data)
@@ -216,8 +252,10 @@ class MasterOrchestrator:
                 if not state_delta and raw.get("architecture") is not None:
                     state_delta = {"architecture": raw["architecture"]}
                 return {"state_delta": state_delta, "content": raw.get("summary") or ""}
+
             if agent_id == "requirements_collector":
                 from src.protocols.schemas import RequirementsState
+
                 req = context.get("requirements")
                 if isinstance(req, dict):
                     rs = RequirementsState(
@@ -246,28 +284,70 @@ class MasterOrchestrator:
                 }
                 return {"state_delta": state_delta, "content": raw.get("response") or ""}
 
-            # --- Placeholders: add adapter logic here when agents are implemented ---
-
             if agent_id == "execution_planner":
-                # TODO: wire ExecutionPlannerAgent when built.
-                # Expected input:  {"architecture": context.get("architecture"), "user_request": user_input}
-                # Expected output: {"state_delta": {"roadmap": {...}}, "content": "..."}
-                return None  # skipped until agent is implemented
+                payload = {
+                    "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
+                    "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                    "existing_roadmap": context.get("roadmap") or self._to_dict(getattr(project_state, "roadmap", None)),
+                    "user_request": user_input,
+                }
+                raw = await agent.process(payload)
+                state_delta = raw.get("state_delta") or {}
+                if not state_delta and raw.get("roadmap") is not None:
+                    state_delta = {"roadmap": raw.get("roadmap")}
+                return {
+                    "state_delta": state_delta,
+                    "content": raw.get("summary") or raw.get("content") or "",
+                }
 
             if agent_id == "mockup_agent":
-                # TODO: wire MockupAgent when built.
-                # Expected input:  {"requirements": context.get("requirements"), "architecture": context.get("architecture"), "user_request": user_input}
-                # Expected output: {"state_delta": {"mockups": [...]}, "content": "..."}
-                return None  # skipped until agent is implemented
+                payload = {
+                    "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
+                    "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                    "platform": "web",
+                    "user_request": user_input,
+                }
+                raw = await agent.process(payload)
+                state_delta = raw.get("state_delta") or {}
+                if isinstance(state_delta.get("mockups"), list):
+                    state_delta = dict(state_delta)
+                    state_delta["mockups"] = self._normalize_mockups(state_delta["mockups"])
+                return {
+                    "state_delta": state_delta,
+                    "content": raw.get("summary") or raw.get("content") or "",
+                }
 
             if agent_id == "exporter":
-                # TODO: wire ExporterAgent when built.
-                # Expected input:  full context (required_context = ["*"])
-                # Expected output: {"state_delta": {}, "content": "Export ready at <path>"}
-                return None  # skipped until agent is implemented
+                payload = (
+                    project_state.model_dump()
+                    if project_state is not None and hasattr(project_state, "model_dump")
+                    else dict(context)
+                )
+                payload["user_request"] = user_input
 
-        except Exception:
+                if hasattr(agent, "execute"):
+                    exec_out = await agent.execute(payload, context=payload, tools=[])
+                    raw_content = getattr(exec_out, "content", {})
+                    state_delta = getattr(exec_out, "state_delta", {}) or {}
+                    if isinstance(raw_content, dict):
+                        content = raw_content.get("summary") or raw_content.get("content") or ""
+                        if not state_delta:
+                            state_delta = raw_content.get("state_delta") or {}
+                    else:
+                        content = str(raw_content) if raw_content is not None else ""
+                    return {"state_delta": state_delta, "content": content}
+
+                if hasattr(agent, "process"):
+                    raw = await agent.process(payload)
+                    return {
+                        "state_delta": raw.get("state_delta") or {},
+                        "content": raw.get("summary") or raw.get("content") or "",
+                    }
+
+        except Exception as exc:
+            print(f"[orchestrator] agent '{agent_id}' failed: {type(exc).__name__}: {exc}", flush=True)
             return None
+
         return None
 
     def _synthesize_response(self, results: list[dict]) -> str:

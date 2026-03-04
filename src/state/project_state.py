@@ -83,12 +83,18 @@ class ArchitectureDefinition(BaseModel):
 
 
 class Mockup(BaseModel):
-    """Design artifact produced by the mockup agent."""
+    """Design artifact produced by the mockup agent (legacy + rich schema)."""
 
     screen_name: str
-    wireframe_code: str
+    wireframe_code: Optional[str] = None
     user_flow: Optional[str] = None
     interactions: List[str] = Field(default_factory=list)
+    screen_id: Optional[str] = None
+    wireframe_spec: Optional[Dict] = None
+    excalidraw_scene: Optional[Dict] = None
+    screenshot_path: Optional[str] = None
+    template_used: Optional[str] = None
+    version: Optional[str] = None
 
 
 class Roadmap(BaseModel):

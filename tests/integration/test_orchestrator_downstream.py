@@ -129,8 +129,7 @@ async def test_downstream_execution_planner_runs_after_architect():
     """
     3.5 core: when project_architect is in the plan, execution_planner is
     appended downstream. Both appear in agent_results in the correct order.
-    execution_planner is 'skipped' (placeholder not yet wired) but is
-    still planned and appears after project_architect in the results list.
+    execution_planner is now wired and should execute successfully.
     """
     session_id = "test-35-downstream"
     persistence = InMemoryPersistenceAdapter()
@@ -169,8 +168,10 @@ async def test_downstream_execution_planner_runs_after_architect():
     assert "execution_planner" in result_ids
     assert result_ids.index("project_architect") < result_ids.index("execution_planner"), \
         "project_architect must appear before execution_planner in agent_results"
+    exec_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "execution_planner")
+    assert exec_result["status"] == "success"
 
-    print("  PASS: downstream — execution_planner planned after project_architect, both in agent_results")
+    print("  PASS: downstream — execution_planner planned and executed after project_architect")
 
 
 @pytest.mark.asyncio
@@ -244,8 +245,8 @@ async def test_change_request_reruns_downstream():
     assert tech_stack.get("backend") == "Python/FastAPI", \
         f"Expected Python/FastAPI, got {tech_stack}"
 
-    # Phase should have advanced
-    assert state_dict["current_phase"] == "architecture_complete"
+    # Phase should reflect the last successful agent in this plan.
+    assert state_dict["current_phase"] == "planning_complete"
     print(f"  PASS: change request — both agents re-ran, stack updated to {tech_stack}")
 
 

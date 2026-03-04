@@ -194,7 +194,7 @@ def _roadmap_to_markdown(roadmap: Any) -> str:
 
 
 def _mockups_to_markdown(mockups: Any) -> str:
-    """Build UI/UX Mockups section. Supports screen_name, user_flow, wireframe_code, interactions."""
+    """Build UI/UX Mockups section. Supports legacy and rich mockup payloads."""
     lines = ["## 4. UI/UX Mockups\n"]
     if isinstance(mockups, str):
         lines.append(f"*{mockups}*")
@@ -206,11 +206,21 @@ def _mockups_to_markdown(mockups: Any) -> str:
         s = screen if isinstance(screen, dict) else (screen.model_dump() if hasattr(screen, "model_dump") else {})
         name = s.get("screen_name", "Screen")
         flow = s.get("user_flow", "")
-        lines.append(f"- **{name}**: {flow}")
+        lines.append(f"- **{name}**: {flow}" if flow else f"- **{name}**")
         interactions = s.get("interactions", [])
         if interactions:
             lines.append("  - Interactions: " + ", ".join(interactions))
-        wireframe_code = s.get("wireframe_code", "").strip()
+        if s.get("screenshot_path"):
+            lines.append("  - Preview: " + str(s["screenshot_path"]))
+
+        raw_wireframe = s.get("wireframe_code")
+        wireframe_code = raw_wireframe.strip() if isinstance(raw_wireframe, str) else ""
+        if not wireframe_code:
+            if s.get("excalidraw_scene"):
+                wireframe_code = json.dumps(s.get("excalidraw_scene"), indent=2)
+            elif s.get("wireframe_spec"):
+                wireframe_code = json.dumps(s.get("wireframe_spec"), indent=2)
+
         if wireframe_code:
             # Match mockup agent output: Excalidraw JSON, or HTML/Mermaid snippets
             if wireframe_code.startswith("{") and ("\"type\": \"excalidraw\"" in wireframe_code or "\"elements\"" in wireframe_code):

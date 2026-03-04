@@ -27,7 +27,7 @@ AGENT_STORE: list[dict[str, Any]] = [
         "description": "Creates phases, milestones, and implementation steps from architecture.",
         "requires": ["architecture"],
         "produces": ["roadmap"],
-        "phase_compatibility": ["architecture_complete"],
+        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete"],
     },
     {
         "id": "mockup_agent",
@@ -35,7 +35,12 @@ AGENT_STORE: list[dict[str, Any]] = [
         "description": "Generates UI wireframes and Figma-ready layouts.",
         "requires": ["requirements", "architecture"],
         "produces": ["mockups"],
-        "phase_compatibility": ["requirements_complete"],
+        "phase_compatibility": [
+            "requirements_complete",
+            "architecture_complete",
+            "planning_complete",
+            "design_complete",
+        ],
     },
     {
         "id": "exporter",

@@ -13,22 +13,22 @@ INTENT_PATTERNS = {
         "triggers": ["clarify", "what if", "constraints"]
     },
     "architecture_design": {
-        "keywords": ["architecture", "tech stack", "database", "API"],
-        "phase_compatibility": ["requirements_complete"],
+        "keywords": ["architecture", "tech stack", "database", "api"],
+        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete"],
         "triggers": ["diagram", "structure", "how does"]
     },
     "mockup_creation": {
-        "keywords": ["UI", "screen", "flow", "wireframe", "design"],
-        "phase_compatibility": ["requirements_complete"],
+        "keywords": ["ui", "screen", "flow", "wireframe", "design"],
+        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete", "design_complete"],
         "triggers": ["looks like", "user journey"]
     },
     "execution_planning": {
         "keywords": ["roadmap", "timeline", "milestone", "sprint"],
-        "phase_compatibility": ["architecture_complete"],
+        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete"],
         "triggers": ["how long", "when", "priority"]
     },
     "export": {
-        "keywords": ["export", "download", "document", "PDF"],
+        "keywords": ["export", "download", "document", "pdf"],
         "phase_compatibility": ["*"],
         "triggers": ["generate", "compile"]
     }

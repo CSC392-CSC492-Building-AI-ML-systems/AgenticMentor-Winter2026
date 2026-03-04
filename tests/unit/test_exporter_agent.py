@@ -125,6 +125,27 @@ def test_mockups_to_markdown_wireframe_and_interactions():
     assert "```" in md
 
 
+def test_mockups_to_markdown_rich_mockup_shape():
+    """Exporter should handle mockup entries that only have wireframe_spec/excalidraw_scene."""
+    md = _mockups_to_markdown(
+        [
+            {
+                "screen_name": "Dashboard",
+                "screen_id": "dashboard",
+                "template_used": "dashboard",
+                "wireframe_spec": {"screen_name": "Dashboard", "template": "dashboard"},
+                "excalidraw_scene": {"type": "excalidraw", "version": 2, "elements": []},
+                "screenshot_path": "outputs/mockups/Dashboard.html",
+                "interactions": ["Click card"],
+            }
+        ]
+    )
+    assert "Dashboard" in md
+    assert "Click card" in md
+    assert "outputs/mockups/Dashboard.html" in md
+    assert "```json" in md
+
+
 @pytest.mark.asyncio
 async def test_exporter_agent_generate_returns_structure():
     """Agent returns content, state_delta (export_artifacts), metadata (saved_path)."""

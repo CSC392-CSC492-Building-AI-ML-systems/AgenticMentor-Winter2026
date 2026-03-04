@@ -200,8 +200,8 @@ async def test_full_orchestration_multi_turn():
     assert result_ids2.index("project_architect") < result_ids2.index("execution_planner")
 
     s2 = await persistence.get(session_id)
-    # Phase: project_architect → architecture_complete (last transition wins)
-    assert s2["current_phase"] == "architecture_complete", f"Expected architecture_complete, got {s2['current_phase']}"
+    # Phase: project_architect -> execution_planner, so last transition is planning_complete.
+    assert s2["current_phase"] == "planning_complete", f"Expected planning_complete, got {s2['current_phase']}"
     assert s2["architecture"]["tech_stack"]["backend"] == "Python/FastAPI"
     assert len(s2["conversation_history"]) == 4  # 2 more entries
     print(f"    phase={s2['current_phase']}, stack={s2['architecture']['tech_stack']}, history={len(s2['conversation_history'])} entries ✓")

@@ -23,32 +23,48 @@ class AgentRegistry:
 
     def _create_agent(self, agent_id: str) -> Any | None:
         if agent_id == "requirements_collector":
-            from src.agents.requirements_collector import get_agent
-            return get_agent()
-        if agent_id == "project_architect":
-            from src.adapters.llm_clients import GeminiClient
-            from src.agents.project_architect import ProjectArchitectAgent
-            llm = GeminiClient(model="gemini-2.0-flash", temperature=0.2)
-            return ProjectArchitectAgent(state_manager=self._state_manager, llm_client=llm)
+            try:
+                from src.agents.requirements_collector import get_agent
+                return get_agent()
+            except Exception:
+                return None
 
-        # --- Placeholders: wire real agent classes here when implemented ---
+        if agent_id == "project_architect":
+            try:
+                from src.adapters.llm_clients import GeminiClient
+                from src.agents.project_architect import ProjectArchitectAgent
+                llm = GeminiClient(model="gemini-2.0-flash", temperature=0.2)
+                return ProjectArchitectAgent(state_manager=self._state_manager, llm_client=llm)
+            except Exception:
+                return None
+
         if agent_id == "execution_planner":
-            # TODO: import and instantiate ExecutionPlannerAgent when built.
-            # from src.agents.execution_planner import ExecutionPlannerAgent
-            # return ExecutionPlannerAgent(state_manager=self._state_manager)
-            return None  # skipped until agent is implemented
+            try:
+                from src.agents.execution_planner_agent import ExecutionPlannerAgent
+                return ExecutionPlannerAgent(state_manager=self._state_manager)
+            except Exception:
+                return None
 
         if agent_id == "mockup_agent":
-            # TODO: import and instantiate MockupAgent when built.
-            # from src.agents.mockup_agent import MockupAgent
-            # return MockupAgent(state_manager=self._state_manager)
-            return None  # skipped until agent is implemented
+            try:
+                from src.adapters.llm_clients import GeminiClient
+                from src.agents.mockup_agent import MockupAgent
+                llm = GeminiClient(model="gemini-2.0-flash", temperature=0.2)
+                return MockupAgent(state_manager=self._state_manager, llm_client=llm)
+            except Exception:
+                # Mockup agent supports llm_client=None fallback mode.
+                try:
+                    from src.agents.mockup_agent import MockupAgent
+                    return MockupAgent(state_manager=self._state_manager, llm_client=None)
+                except Exception:
+                    return None
 
         if agent_id == "exporter":
-            # TODO: import and instantiate ExporterAgent when built.
-            # from src.agents.exporter import ExporterAgent
-            # return ExporterAgent(state_manager=self._state_manager)
-            return None  # skipped until agent is implemented
+            try:
+                from src.agents.exporter_agent import get_agent
+                return get_agent()
+            except Exception:
+                return None
 
         return None
 
