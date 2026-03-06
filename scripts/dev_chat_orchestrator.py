@@ -1,16 +1,22 @@
-"""Minimal CLI chat loop for MasterOrchestrator.
+"""Minimal CLI chat loop for MasterOrchestrator (full application with real sub-agents).
 
 Usage (from project root):
 
     python -m scripts.dev_chat_orchestrator
 
-This uses an in-memory persistence adapter, so state lives only
-for the lifetime of the process.
+Uses the same MasterOrchestrator and AgentRegistry as the full app: real
+requirements_collector, project_architect, execution_planner, mockup_agent, exporter.
+State is in-memory (no DB). Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env so
+all agents can run; otherwise agents that need the key will be skipped.
+
+Optional env:
+  USE_LLM_INTENT=1  → use LLM for intent classification (default: rule-based).
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 import sys
 
@@ -34,11 +40,16 @@ async def main() -> None:
     persistence = InMemoryPersistenceAdapter()
     state_manager = StateManager(persistence)
 
-    # use_llm=False → intent classifier runs in pure rule-based mode.
-    orchestrator = MasterOrchestrator(state_manager, use_llm=False)
+    use_llm = os.environ.get("USE_LLM_INTENT", "").strip() in ("1", "true", "yes")
+    orchestrator = MasterOrchestrator(state_manager, use_llm=use_llm)
     session_id = "dev-cli-session"
 
-    print("Dev chat with MasterOrchestrator")
+    print("Dev chat with MasterOrchestrator (real sub-agents, in-memory state)")
+    if use_llm:
+        print("Intent: LLM-based (USE_LLM_INTENT=1)")
+    else:
+        print("Intent: rule-based. Set USE_LLM_INTENT=1 for LLM intent.")
+    print("Set GEMINI_API_KEY in .env for architect/mockup/requirements LLM.")
     print("Type 'exit' or 'quit' to end.\n")
 
     while True:

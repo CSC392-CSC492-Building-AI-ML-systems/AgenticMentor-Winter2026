@@ -18,8 +18,8 @@ from src.storage.memory_store import InMemoryPersistenceAdapter
 from src.orchestrator.master_agent import MasterOrchestrator
 
 
-# Skip E2E that calls Gemini if no API key (e.g. in CI)
-SKIP_REAL_LLM = not os.environ.get("GEMINI_API_KEY") and not os.environ.get("gemini_api_key")
+# Skip E2E that calls Gemini if no API key (e.g. in CI). With key set, tests run real agents and assert on state.
+SKIP_REAL_LLM = not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY")
 
 
 @pytest.mark.asyncio

@@ -8,12 +8,28 @@ from src.orchestrator.master_agent import MasterOrchestrator
 from src.state.project_state import ProjectState, Requirements
 
 
+class _MockPersistence:
+    """Minimal persistence adapter for tests: get/save to a shared dict."""
+
+    def __init__(self, store: dict):
+        self._store = store
+
+    async def get(self, session_id: str):
+        state = self._store.get(session_id)
+        return state.model_dump() if hasattr(state, "model_dump") else state
+
+    async def save(self, session_id: str, state_dict: dict):
+        self._store[session_id] = ProjectState(**state_dict)
+
+
 @pytest.fixture
 def mock_state_manager():
-    """In-memory state manager for tests."""
+    """In-memory state manager for tests; matches StateManager interface (load, update, db, cache)."""
     class MockStateManager:
         def __init__(self):
             self._store = {}
+            self.cache = {}
+            self.db = _MockPersistence(self._store)
 
         async def load(self, session_id: str):
             if session_id not in self._store:
@@ -22,7 +38,15 @@ def mock_state_manager():
                     current_phase="initialization",
                     requirements=Requirements(),
                 )
+            self.cache[session_id] = self._store[session_id]
             return self._store[session_id]
+
+        async def update(self, session_id: str, delta: dict):
+            state = await self.load(session_id)
+            updated = state.model_copy(update=delta)
+            self._store[session_id] = updated
+            self.cache[session_id] = updated
+            return updated
 
     return MockStateManager()
 
@@ -114,12 +138,12 @@ async def test_master_orchestrator_export_intent(mock_state_manager):
 
 
 @pytest.mark.asyncio
-async def test_unknown_intent_gets_full_pipeline_fallback(mock_state_manager):
-    """When intent is unknown (gibberish input), plan defaults to full pipeline so we still get a useful plan."""
+async def test_unknown_intent_gets_requirements_fallback(mock_state_manager):
+    """When intent is unknown (gibberish input), plan falls back to requirements_collector only."""
     orch = MasterOrchestrator(mock_state_manager, use_llm=False)
     out = await orch.process_request("xyzzz qqq nothing matches", "s1")
     assert out["intent"]["primary_intent"] == "unknown"
     assert len(out["plan"].tasks) >= 1
     agent_ids = [t.agent_id for t in out["plan"].tasks]
     assert "requirements_collector" in agent_ids
-    assert "exporter" in agent_ids
+    assert "exporter" not in agent_ids

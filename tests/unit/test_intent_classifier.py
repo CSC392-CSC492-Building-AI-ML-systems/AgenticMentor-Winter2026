@@ -51,6 +51,16 @@ def test_execution_planning_architecture_complete(classifier):
     assert "execution_planner" in result["requires_agents"]
 
 
+def test_requirements_follow_up_allowed_in_later_phase(classifier):
+    """Requirements-like follow-up language in later phases should still route to requirements_gathering."""
+    result = classifier.analyze(
+        "I want this to stay simple for personal use as a side project",
+        "requirements_complete",
+    )
+    assert result["primary_intent"] == "requirements_gathering"
+    assert "requirements_collector" in result["requires_agents"]
+
+
 def test_empty_input_unknown(classifier):
     """Empty or whitespace -> unknown, empty agents, 0 confidence."""
     result = classifier.analyze("", "initialization")

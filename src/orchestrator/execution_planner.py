@@ -12,7 +12,6 @@ from src.orchestrator.agent_store import (
     AGENT_STORE,
     get_agent_by_id,
     get_producer_for_artifact,
-    FULL_PIPELINE_AGENT_IDS,
 )
 from src.orchestrator.execution_plan import ExecutionPlan, Task
 
@@ -119,15 +118,18 @@ class ExecutionPlanner:
         Given intent (IntentResult with requires_agents) and project_state,
         return an ExecutionPlan with tasks in dependency order (upstream first).
         """
+        primary_intent = intent.get("primary_intent") or "unknown"
         agent_ids = list(intent.get("requires_agents") or [])
-        # When intent is unknown or empty, default to full pipeline (req -> arch -> execution_planner -> mockup -> exporter).
-        if not agent_ids or (intent.get("primary_intent") == "unknown"):
-            agent_ids = list(FULL_PIPELINE_AGENT_IDS)
+        # Unknown/empty intent should be cheap and conversational: route only to requirements collection,
+        # not the full pipeline. This avoids expensive accidental fan-out on ambiguous turns.
+        if not agent_ids or primary_intent == "unknown":
+            agent_ids = ["requirements_collector"]
 
         phase = getattr(project_state, "current_phase", "initialization")
-        # Resolve upstream deps first, then expand downstream.
+        # Resolve upstream deps first. Only expand downstream for non-conversational paths.
         resolved = _resolve_upstream(agent_ids, project_state)
-        resolved = _resolve_downstream(resolved, project_state)
+        if primary_intent not in {"unknown", "requirements_gathering"}:
+            resolved = _resolve_downstream(resolved, project_state)
 
         plan = ExecutionPlan()
         for aid in resolved:

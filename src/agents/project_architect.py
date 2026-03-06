@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -590,15 +591,19 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
 
         return fallback_diagram
 
+    # Timeout for each LLM call so we don't hang indefinitely on slow/stuck API
+    _LLM_TIMEOUT_SECONDS = 120
+
     async def _invoke_llm(self, prompt: str) -> str:
-        """Invoke LLM with various client interfaces."""
-        if hasattr(self.llm_client, "generate"):
-            response = await self.llm_client.generate(prompt)
-        elif hasattr(self.llm_client, "ainvoke"):
-            response = await self.llm_client.ainvoke(prompt)
-        else:
+        """Invoke LLM with various client interfaces. Raises asyncio.TimeoutError after _LLM_TIMEOUT_SECONDS."""
+        async def _call():
+            if hasattr(self.llm_client, "generate"):
+                return await self.llm_client.generate(prompt)
+            if hasattr(self.llm_client, "ainvoke"):
+                return await self.llm_client.ainvoke(prompt)
             return ""
-        
+
+        response = await asyncio.wait_for(_call(), timeout=self._LLM_TIMEOUT_SECONDS)
         return response if isinstance(response, str) else str(response)
 
     # ========================================================================

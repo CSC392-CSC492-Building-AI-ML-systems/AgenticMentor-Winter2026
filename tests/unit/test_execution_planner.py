@@ -80,20 +80,17 @@ def test_export_exporter_only(planner):
             break
 
 
-def test_unknown_intent_full_pipeline_default(planner):
-    """Intent unknown or empty requires_agents -> default to full pipeline; phase filters which agents run."""
+def test_unknown_intent_defaults_to_requirements_collector(planner):
+    """Intent unknown or empty requires_agents -> cheap fallback to requirements_collector only."""
     intent = {"primary_intent": "unknown", "requires_agents": [], "confidence": 0.0}
     state = _state(current_phase="architecture_complete")
     plan = planner.plan(intent, state)
     agent_ids = [t.agent_id for t in plan.tasks]
-    assert len(plan.tasks) >= 4
+    assert len(plan.tasks) == 1
     assert "requirements_collector" in agent_ids
-    assert "project_architect" in agent_ids
-    assert "execution_planner" in agent_ids
-    assert "exporter" in agent_ids
-    assert agent_ids.index("requirements_collector") < agent_ids.index("project_architect")
-    assert agent_ids.index("project_architect") < agent_ids.index("execution_planner")
-    assert agent_ids.index("execution_planner") < agent_ids.index("exporter")
+    assert "project_architect" not in agent_ids
+    assert "execution_planner" not in agent_ids
+    assert "exporter" not in agent_ids
 
 
 def test_requirements_gathering_one_task(planner):

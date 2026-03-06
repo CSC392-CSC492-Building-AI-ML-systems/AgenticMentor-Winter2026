@@ -111,11 +111,14 @@ class RequirementsAgent(BaseAgent):
         
         messages = [SystemMessage(content=SYSTEM_PROMPT)]
         
+        # Orchestrator stores conversation_history as list of dicts {"role": "user"|"assistant", "content": "..."}
         for msg in conversation_history[-10:]:
-            if msg.role == MessageRole.USER:
-                messages.append(HumanMessage(content=msg.content))
-            elif msg.role == MessageRole.ASSISTANT:
-                messages.append(AIMessage(content=msg.content))
+            role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            if role in (MessageRole.USER, "user"):
+                messages.append(HumanMessage(content=content or ""))
+            elif role in (MessageRole.ASSISTANT, "assistant"):
+                messages.append(AIMessage(content=content or ""))
         
         messages.append(HumanMessage(content=user_message))
         

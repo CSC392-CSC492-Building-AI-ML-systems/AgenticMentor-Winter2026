@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 
 INTENT_PATTERNS = {
     "requirements_gathering": {
-        "keywords": ["need", "want", "goal", "problem", "user story"],
-        "phase_compatibility": ["initialization", "discovery"],
-        "triggers": ["clarify", "what if", "constraints"]
+        "keywords": ["need", "want", "goal", "problem", "user story", "feature", "mvp", "simple"],
+        "phase_compatibility": ["*"],
+        "triggers": ["clarify", "what if", "constraints", "personal use", "side project"]
     },
     "architecture_design": {
         "keywords": ["architecture", "tech stack", "database", "api"],
@@ -30,7 +30,7 @@ INTENT_PATTERNS = {
     "export": {
         "keywords": ["export", "download", "document", "pdf"],
         "phase_compatibility": ["*"],
-        "triggers": ["generate", "compile"]
+        "triggers": ["save as", "download as"]
     }
 }
 
