@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     
     # Model Configuration
     gemini_api_key: str
-    model_name: str = "gemini-flash-latest"
+    model_name: str = "gemini-2.5-flash"
     model_temperature: float = 0.7
     model_max_tokens: int = 4096
     

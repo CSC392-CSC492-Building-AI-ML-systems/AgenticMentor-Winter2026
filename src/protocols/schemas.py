@@ -53,6 +53,7 @@ class RequirementsState(BaseModel):
     budget: Optional[str] = None
     is_complete: bool = False
     progress: float = 0.0  # 0.0 to 1.0
+    pending_confirmation: bool = False  # True when we filled defaults; ask user to confirm before proceeding
     
     class Config:
         json_schema_extra = {

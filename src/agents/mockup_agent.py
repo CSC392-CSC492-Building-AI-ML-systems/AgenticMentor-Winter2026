@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, Optional
 from pathlib import Path
 from src.agents.base_agent import BaseAgent
@@ -10,6 +11,7 @@ class MockupAgent(BaseAgent):
     """Generates UI wireframes as Excalidraw scenes."""
     
     description = "Generates UI wireframes and user flows."
+    _LLM_TIMEOUT_SECONDS = 120
     
     def __init__(
         self,
@@ -266,7 +268,7 @@ Focus on essential MVP screens only (3-5 screens typical).
         
         # Save JSON file
         json_path = output_dir / f"{project_slug}.excalidraw"
-        with open(json_path, "w") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump(excalidraw_json, f, indent=2)
         
         export_paths = {
@@ -457,7 +459,7 @@ Focus on essential MVP screens only (3-5 screens typical).
 </body>
 </html>"""
         
-        with open(html_path, 'w') as f:
+        with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
         # Convert to absolute path
@@ -467,10 +469,10 @@ Focus on essential MVP screens only (3-5 screens typical).
         # Auto-open in browser
         try:
             webbrowser.open(f'file://{html_path_abs}')
-            print(f"  ✓ Preview opened in browser: {html_path.name}", flush=True)
+            print(f"  [OK] Preview opened in browser: {html_path.name}", flush=True)
         except Exception as e:
-            print(f"  ⚠ Could not auto-open browser: {e}", flush=True)
-            print(f"  → Open manually: file://{html_path_abs}", flush=True)
+            print(f"  [WARN] Could not auto-open browser: {e}", flush=True)
+            print(f"  -> Open manually: file://{html_path_abs}", flush=True)
         
         return preview_info
     
@@ -533,11 +535,19 @@ Focus on essential MVP screens only (3-5 screens typical).
     
     async def _invoke_llm(self, prompt: str) -> str:
         """Invoke LLM client."""
-        # Simplified - actual implementation depends on your LLM client
-        if hasattr(self.llm_client, "ainvoke"):
-            response = await self.llm_client.ainvoke(prompt)
-            return response.content if hasattr(response, "content") else str(response)
-        return ""
+        async def _call():
+            if hasattr(self.llm_client, "generate"):
+                return await self.llm_client.generate(prompt)
+            if hasattr(self.llm_client, "ainvoke"):
+                return await self.llm_client.ainvoke(prompt)
+            return ""
+
+        response = await asyncio.wait_for(_call(), timeout=self._LLM_TIMEOUT_SECONDS)
+        if hasattr(response, "content"):
+            return response.content
+        if isinstance(response, str):
+            return response
+        return str(response)
     
     # BaseAgent interface
     

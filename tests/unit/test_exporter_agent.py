@@ -125,6 +125,27 @@ def test_mockups_to_markdown_wireframe_and_interactions():
     assert "```" in md
 
 
+def test_mockups_to_markdown_rich_mockup_shape():
+    """Exporter should handle mockup entries that only have wireframe_spec/excalidraw_scene."""
+    md = _mockups_to_markdown(
+        [
+            {
+                "screen_name": "Dashboard",
+                "screen_id": "dashboard",
+                "template_used": "dashboard",
+                "wireframe_spec": {"screen_name": "Dashboard", "template": "dashboard"},
+                "excalidraw_scene": {"type": "excalidraw", "version": 2, "elements": []},
+                "screenshot_path": "outputs/mockups/Dashboard.html",
+                "interactions": ["Click card"],
+            }
+        ]
+    )
+    assert "Dashboard" in md
+    assert "Click card" in md
+    assert "outputs/mockups/Dashboard.html" in md
+    assert "```json" in md
+
+
 @pytest.mark.asyncio
 async def test_exporter_agent_generate_returns_structure():
     """Agent returns content, state_delta (export_artifacts), metadata (saved_path)."""
@@ -145,6 +166,9 @@ async def test_exporter_agent_generate_returns_structure():
     artifacts = result["state_delta"]["export_artifacts"]
     assert "executive_summary" in artifacts
     assert "markdown_content" in artifacts
+    assert artifacts["saved_path"]
+    assert artifacts["generated_formats"] == ["markdown", "pdf"]
+    assert artifacts["history"]
     assert "metadata" in result
     assert "saved_path" in result["metadata"]
 
@@ -160,6 +184,10 @@ async def test_exporter_agent_metadata_saved_path(tmp_path, monkeypatch):
     assert saved_path
     assert saved_path.endswith(".pdf") or saved_path.endswith(".html")
     assert "saved_path_test" in saved_path.lower()
+    artifacts = result["state_delta"]["export_artifacts"]
+    assert artifacts["saved_path"] == saved_path
+    assert artifacts["history"][0]["saved_path"] == saved_path
+    assert artifacts["generated_formats"] == ["markdown", "pdf"]
 
 
 def test_exporter_agent_get_quality_criteria():
