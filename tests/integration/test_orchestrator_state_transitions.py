@@ -169,7 +169,22 @@ class _FakeAgentRegistry:
                     }
                     class Out:
                         content = "Export complete."
-                        state_delta = {}
+                        state_delta = {
+                            "export_artifacts": {
+                                "executive_summary": "Export summary",
+                                "markdown_content": "# Export",
+                                "saved_path": "outputs/state-transition-export.pdf",
+                                "generated_formats": ["markdown", "pdf"],
+                                "exported_at": "2026-03-06T20:30:00",
+                                "history": [
+                                    {
+                                        "saved_path": "outputs/state-transition-export.pdf",
+                                        "generated_formats": ["markdown", "pdf"],
+                                        "exported_at": "2026-03-06T20:30:00",
+                                    }
+                                ],
+                            }
+                        }
                     return Out()
             return FakeExporter()
 
@@ -359,6 +374,8 @@ async def test_full_chain_state_maintained_and_phase_advances(
     assert snap.get("roadmap") is not None
     assert snap.get("mockups") is not None and len(snap.get("mockups", [])) >= 1
     assert snap.get("current_phase") == "design_complete" or snap.get("current_phase") == "exportable"
+    assert snap.get("export_artifacts", {}).get("saved_path") == "outputs/state-transition-export.pdf"
+    assert snap.get("export_artifacts", {}).get("generated_formats") == ["markdown", "pdf"]
 
     received = fake_registry.received.get("exporter")
     assert received is not None
@@ -374,7 +391,7 @@ async def test_full_chain_state_maintained_and_phase_advances(
 async def test_after_full_chain_reloaded_state_complete(
     state_manager, fake_registry, persistence, session_id
 ):
-    """After full chain, clear cache and reload from persistence; state must have requirements, architecture, roadmap, mockups."""
+    """After full chain, reload persisted requirements, architecture, roadmap, mockups, and export metadata."""
     seed = ProjectState(
         session_id=session_id,
         current_phase="initialization",
@@ -386,6 +403,7 @@ async def test_after_full_chain_reloaded_state_complete(
     await orch.process_request("architecture", session_id)
     await orch.process_request("roadmap", session_id)
     await orch.process_request("wireframes", session_id)
+    await orch.process_request("export", session_id)
 
     state_manager.cache.clear()
     reloaded = await state_manager.load(session_id)
@@ -394,3 +412,6 @@ async def test_after_full_chain_reloaded_state_complete(
     assert reloaded.architecture is not None and (reloaded.architecture.tech_stack or reloaded.architecture.system_diagram)
     assert reloaded.roadmap is not None and (reloaded.roadmap.phases or reloaded.roadmap.milestones)
     assert reloaded.mockups is not None and len(reloaded.mockups) >= 1
+    assert reloaded.export_artifacts.saved_path == "outputs/state-transition-export.pdf"
+    assert reloaded.export_artifacts.generated_formats == ["markdown", "pdf"]
+    assert len(reloaded.export_artifacts.history) == 1

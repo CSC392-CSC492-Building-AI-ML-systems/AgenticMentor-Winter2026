@@ -166,6 +166,9 @@ async def test_exporter_agent_generate_returns_structure():
     artifacts = result["state_delta"]["export_artifacts"]
     assert "executive_summary" in artifacts
     assert "markdown_content" in artifacts
+    assert artifacts["saved_path"]
+    assert artifacts["generated_formats"] == ["markdown", "pdf"]
+    assert artifacts["history"]
     assert "metadata" in result
     assert "saved_path" in result["metadata"]
 
@@ -181,6 +184,10 @@ async def test_exporter_agent_metadata_saved_path(tmp_path, monkeypatch):
     assert saved_path
     assert saved_path.endswith(".pdf") or saved_path.endswith(".html")
     assert "saved_path_test" in saved_path.lower()
+    artifacts = result["state_delta"]["export_artifacts"]
+    assert artifacts["saved_path"] == saved_path
+    assert artifacts["history"][0]["saved_path"] == saved_path
+    assert artifacts["generated_formats"] == ["markdown", "pdf"]
 
 
 def test_exporter_agent_get_quality_criteria():

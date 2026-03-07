@@ -73,3 +73,47 @@ async def test_roadmap_replacement_does_not_duplicate_phase_lists():
 
     assert len(state.roadmap.phases) == 1
     assert state.roadmap.phases[0].name == "Build"
+
+
+@pytest.mark.asyncio
+async def test_mockup_updates_replace_existing_screen_by_identity():
+    """Sequential mockup updates should replace the same screen instead of appending duplicates."""
+    session_id = "state-manager-mockup-merge"
+    sm = StateManager(InMemoryPersistenceAdapter())
+
+    await sm.update(
+        session_id,
+        {
+            "mockups": [
+                {
+                    "screen_name": "Dashboard",
+                    "screen_id": "dashboard",
+                    "wireframe_code": '{"version":1}',
+                    "user_flow": "Open dashboard",
+                    "interactions": [],
+                    "template_used": "default",
+                }
+            ]
+        },
+    )
+
+    state = await sm.update(
+        session_id,
+        {
+            "mockups": [
+                {
+                    "screen_name": "Dashboard",
+                    "screen_id": "dashboard",
+                    "wireframe_code": '{"version":2}',
+                    "user_flow": "Open updated dashboard",
+                    "interactions": ["click refresh"],
+                    "template_used": "analytics",
+                }
+            ]
+        },
+    )
+
+    assert len(state.mockups) == 1
+    assert state.mockups[0].screen_id == "dashboard"
+    assert state.mockups[0].wireframe_code == '{"version":2}'
+    assert state.mockups[0].template_used == "analytics"

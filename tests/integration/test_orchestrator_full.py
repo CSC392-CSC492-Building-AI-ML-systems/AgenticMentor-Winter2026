@@ -94,6 +94,49 @@ class FakeExecutionPlannerAgent:
         return {"state_delta": {}, "summary": "Execution plan ready."}
 
 
+class FakeMockupAgent:
+    async def process(self, input_data: dict) -> dict:
+        return {
+            "state_delta": {
+                "mockups": [
+                    {
+                        "screen_name": "Dashboard",
+                        "screen_id": "dashboard",
+                        "wireframe_code": '{"version": 1}',
+                        "user_flow": "Open dashboard",
+                        "interactions": [],
+                        "template_used": "default",
+                    }
+                ]
+            },
+            "summary": "Mockup ready.",
+        }
+
+
+class FakeExporterAgent:
+    async def execute(self, input, context=None, tools=None):
+        class Out:
+            content = "Export complete."
+            state_delta = {
+                "export_artifacts": {
+                    "executive_summary": "Summary",
+                    "markdown_content": "# Export",
+                    "saved_path": "outputs/full-test-export.pdf",
+                    "generated_formats": ["markdown", "pdf"],
+                    "exported_at": "2026-03-06T20:30:00",
+                    "history": [
+                        {
+                            "saved_path": "outputs/full-test-export.pdf",
+                            "generated_formats": ["markdown", "pdf"],
+                            "exported_at": "2026-03-06T20:30:00",
+                        }
+                    ],
+                }
+            }
+
+        return Out()
+
+
 # ---------------------------------------------------------------------------
 # Registry that tracks get_agent calls
 # ---------------------------------------------------------------------------
@@ -346,6 +389,32 @@ async def test_agent_results_skipped_for_unimplemented_agents():
     print(f"  PASS: unimplemented agents appear as 'skipped_unavailable' in agent_results")
 
 
+@pytest.mark.asyncio
+async def test_export_artifacts_persist_when_exporter_runs():
+    """Exporter state_delta should persist saved path, formats, and history in canonical state."""
+    session_id = "test-full-export"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+    seed = ProjectState(session_id=session_id, current_phase="planning_complete", requirements=Requirements())
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = TrackingRegistry(
+        {
+            "mockup_agent": FakeMockupAgent(),
+            "exporter": FakeExporterAgent(),
+        }
+    )
+    orch = _make_orch(sm, seed, registry, _plan("mockup_agent", "exporter"), "export")
+    response = await orch.process_request("Create a mockup and export it", session_id)
+
+    persisted = await persistence.get(session_id)
+    assert response["state_snapshot"]["export_artifacts"]["saved_path"] == "outputs/full-test-export.pdf"
+    assert persisted["export_artifacts"]["generated_formats"] == ["markdown", "pdf"]
+    assert persisted["export_artifacts"]["history"][0]["saved_path"] == "outputs/full-test-export.pdf"
+    assert len(persisted["mockups"]) == 1
+    print("  PASS: export artifacts persist with saved_path, formats, history, and mockups")
+
+
 # ---------------------------------------------------------------------------
 # Standalone runner
 # ---------------------------------------------------------------------------
@@ -356,6 +425,7 @@ if __name__ == "__main__":
         test_phase_transition_map_covers_all_producing_agents,
         test_conversation_history_roles_always_alternate,
         test_agent_results_skipped_for_unimplemented_agents,
+        test_export_artifacts_persist_when_exporter_runs,
     ]
 
     async def run_all():

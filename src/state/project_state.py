@@ -119,6 +119,10 @@ class ExportArtifacts(BaseModel):
     """Final exported artifacts produced by the exporter agent."""
     executive_summary: Optional[str] = None
     markdown_content: Optional[str] = None
+    saved_path: Optional[str] = None
+    generated_formats: List[str] = Field(default_factory=list)
+    exported_at: Optional[str] = None
+    history: List[Dict[str, str | List[str]]] = Field(default_factory=list)
 
 
 class ProjectState(BaseModel):

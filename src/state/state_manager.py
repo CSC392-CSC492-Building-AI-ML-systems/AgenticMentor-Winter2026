@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
-from src.state.project_state import ProjectState
+from src.state.project_state import Mockup, ProjectState
 from pydantic import BaseModel
 
 
@@ -34,7 +34,7 @@ class StateManager:
         for key, value in delta.items():
             self._apply_delta(state, key, value)
 
-        state.updated_at = datetime.utcnow()
+        state.updated_at = datetime.now(timezone.utc)
         await self.db.save(session_id, state.model_dump())
         self.cache[session_id] = state
         return state
@@ -76,8 +76,39 @@ class StateManager:
     def _merge_or_set(self, state: ProjectState, key: str, value: Any) -> None:
         if not hasattr(state, key):
             return
+        if key == "mockups" and isinstance(value, list):
+            setattr(state, key, self._merge_mockups(getattr(state, key), value))
+            return
         current = getattr(state, key)
         setattr(state, key, self._merged_value(current, value))
+
+    def _merge_mockups(self, current: Any, value: list[Any]) -> list[Mockup]:
+        """Merge mockups by stable identity instead of append-only list extension."""
+        ordered: list[str] = []
+        by_id: dict[str, dict] = {}
+
+        def _normalize(entry: Any) -> dict:
+            if isinstance(entry, dict):
+                return dict(entry)
+            if hasattr(entry, "model_dump"):
+                return entry.model_dump()
+            return {}
+
+        for entry in current or []:
+            item = _normalize(entry)
+            key = item.get("screen_id") or item.get("screen_name") or f"mockup-{len(ordered)}"
+            if key not in by_id:
+                ordered.append(key)
+            by_id[key] = item
+
+        for entry in value or []:
+            item = _normalize(entry)
+            key = item.get("screen_id") or item.get("screen_name") or f"mockup-{len(ordered)}"
+            if key not in by_id:
+                ordered.append(key)
+            by_id[key] = item
+
+        return [Mockup(**by_id[key]) for key in ordered]
 
     def _merged_value(self, current: Any, value: Any) -> Any:
         if isinstance(current, BaseModel) and isinstance(value, dict):

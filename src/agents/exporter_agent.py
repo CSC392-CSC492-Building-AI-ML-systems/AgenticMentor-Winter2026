@@ -1,6 +1,7 @@
 """Organizes the final plan into Markdown, Canvas output, PDFs, or GitHub-ready documentation."""
 
 from __future__ import annotations
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import json
 import os
@@ -349,9 +350,27 @@ class ExporterAgent(BaseAgent):
             if os.path.exists(html_fallback):
                 saved_path = html_fallback
 
+        existing_artifacts = payload.get("export_artifacts", {})
+        if hasattr(existing_artifacts, "model_dump"):
+            existing_artifacts = existing_artifacts.model_dump()
+        existing_artifacts = existing_artifacts or {}
+        generated_formats = ["markdown", "pdf"]
+        exported_at = datetime.now(timezone.utc).isoformat()
+        history = list(existing_artifacts.get("history") or [])
+        history.append(
+            {
+                "saved_path": saved_path,
+                "generated_formats": generated_formats,
+                "exported_at": exported_at,
+            }
+        )
         new_artifacts = ExportArtifacts(
             executive_summary=executive_summary,
             markdown_content=final_markdown,
+            saved_path=saved_path,
+            generated_formats=generated_formats,
+            exported_at=exported_at,
+            history=history,
         )
         return {
             "content": final_markdown,
