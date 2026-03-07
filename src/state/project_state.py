@@ -64,11 +64,18 @@ class Sprint(BaseModel):
 class Requirements(BaseModel):
     """Requirements state fragment."""
 
+    project_type: Optional[str] = None
     functional: List[str] = Field(default_factory=list)
     non_functional: List[str] = Field(default_factory=list)
     constraints: List[str] = Field(default_factory=list)
     user_stories: List[UserStory] = Field(default_factory=list)
     gaps: List[str] = Field(default_factory=list)
+    target_users: List[str] = Field(default_factory=list)
+    business_goals: List[str] = Field(default_factory=list)
+    timeline: Optional[str] = None
+    budget: Optional[str] = None
+    is_complete: bool = False
+    progress: float = 0.0
 
 
 class ArchitectureDefinition(BaseModel):
@@ -83,12 +90,18 @@ class ArchitectureDefinition(BaseModel):
 
 
 class Mockup(BaseModel):
-    """Design artifact produced by the mockup agent."""
+    """Design artifact produced by the mockup agent (legacy + rich schema)."""
 
     screen_name: str
-    wireframe_code: str
+    wireframe_code: Optional[str] = None
     user_flow: Optional[str] = None
     interactions: List[str] = Field(default_factory=list)
+    screen_id: Optional[str] = None
+    wireframe_spec: Optional[Dict] = None
+    excalidraw_scene: Optional[Dict] = None
+    screenshot_path: Optional[str] = None
+    template_used: Optional[str] = None
+    version: Optional[str] = None
 
 
 class Roadmap(BaseModel):
@@ -106,6 +119,10 @@ class ExportArtifacts(BaseModel):
     """Final exported artifacts produced by the exporter agent."""
     executive_summary: Optional[str] = None
     markdown_content: Optional[str] = None
+    saved_path: Optional[str] = None
+    generated_formats: List[str] = Field(default_factory=list)
+    exported_at: Optional[str] = None
+    history: List[Dict[str, str | List[str]]] = Field(default_factory=list)
 
 
 class ProjectState(BaseModel):
@@ -122,6 +139,8 @@ class ProjectState(BaseModel):
     roadmap: Roadmap = Field(default_factory=Roadmap)
     conversation_history: List[dict] = Field(default_factory=list)
     agent_interactions: Dict[str, int] = Field(default_factory=dict)
+    agent_selection_mode: str = "auto"          # "auto" | "manual"
+    selected_agent_id: Optional[str] = None     # set in manual mode
     export_artifacts: ExportArtifacts = Field(default_factory=ExportArtifacts)
 
     class Config:

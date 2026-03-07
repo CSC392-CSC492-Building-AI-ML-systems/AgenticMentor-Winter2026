@@ -57,10 +57,12 @@ test_output/
 *.sqlite3
 
 # Local project docs (changelog for personal/session use only)
-# Local project docs (changelog for personal/session use only)
 docs/changelog.md
 docs/changelog-session-2026-02-08.md
-CHANGELOG.md
+docs/CHANGELOG.md
+docs/changelog_*.md
+docs/orchestrator_so_far.md
+docs/orchestrator-refresher.md
 
 # Frontend GitIgnore
 
@@ -103,4 +105,5 @@ frontend/next-env.d.ts
 frontend/.vercel
 
 # Excalidraw
+outputs/
 outputs/mockups/

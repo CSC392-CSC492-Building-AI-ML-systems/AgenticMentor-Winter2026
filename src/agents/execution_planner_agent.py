@@ -176,13 +176,11 @@ class ExecutionPlannerAgent(BaseAgent):
         )
         roadmap_dict = roadmap.model_dump()
 
-        # State delta: full roadmap + individual fragments so the state manager
-        # can apply granular dotted-path updates (roadmap.phases, etc.).
+        # Persist the canonical roadmap fragment in one update. Duplicating this
+        # with additional roadmap.* deltas can append repeated list entries when
+        # regeneration runs multiple times.
         state_delta = {
             "roadmap": roadmap_dict,
-            "roadmap.phases": roadmap_dict["phases"],
-            "roadmap.milestones": roadmap_dict["milestones"],
-            "roadmap.implementation_tasks": roadmap_dict["implementation_tasks"],
         }
 
         return {
