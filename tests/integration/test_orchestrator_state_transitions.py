@@ -70,8 +70,15 @@ class _FakeAgentRegistry:
                         "current_requirements": current_requirements.model_dump() if hasattr(current_requirements, "model_dump") else current_requirements,
                     }
                     rs = RequirementsState(
+                        project_type="web app",
+                        target_users=["solo user"],
                         key_features=["Auth", "Dashboard", "Search"],
                         technical_constraints=["Python backend", "React frontend"],
+                        business_goals=["Stay organized"],
+                        timeline="2 weeks",
+                        budget="$0",
+                        is_complete=True,
+                        progress=0.9,
                     )
                     return {
                         "requirements": rs,
@@ -219,6 +226,13 @@ async def test_after_requirements_step_state_updated_and_phase_advanced(
     assert "requirements" in snap
     req = snap["requirements"]
     assert (req.get("functional") or req.get("key_features")) or (req.get("constraints") or req.get("technical_constraints")), "requirements should be populated"
+    assert req.get("project_type") == "web app"
+    assert req.get("target_users") == ["solo user"]
+    assert req.get("business_goals") == ["Stay organized"]
+    assert req.get("timeline") == "2 weeks"
+    assert req.get("budget") == "$0"
+    assert req.get("is_complete") is True
+    assert req.get("progress") == pytest.approx(0.9)
     assert snap.get("current_phase") == "requirements_complete"
     assert "conversation_history" in snap
     assert len(snap["conversation_history"]) >= 2  # user + assistant
@@ -235,9 +249,15 @@ async def test_after_requirements_step_persisted_state_has_requirements(
     reloaded = await state_manager.load(session_id)
     assert reloaded.current_phase == "requirements_complete"
     assert reloaded.requirements is not None
-    functional = getattr(reloaded.requirements, "functional", None) or (reloaded.requirements if isinstance(reloaded.requirements, dict) else {}).get("functional")
-    if functional is not None:
-        assert len(functional) >= 1
+    assert reloaded.requirements.functional == ["Auth", "Dashboard", "Search"]
+    assert reloaded.requirements.constraints == ["Python backend", "React frontend"]
+    assert reloaded.requirements.project_type == "web app"
+    assert reloaded.requirements.target_users == ["solo user"]
+    assert reloaded.requirements.business_goals == ["Stay organized"]
+    assert reloaded.requirements.timeline == "2 weeks"
+    assert reloaded.requirements.budget == "$0"
+    assert reloaded.requirements.is_complete is True
+    assert reloaded.requirements.progress == pytest.approx(0.9)
 
 
 # ----- 2. Two-step: requirements then architecture; state fed and updated -----
@@ -274,6 +294,8 @@ async def test_transition_requirements_then_architecture_state_fed_and_updated(
     req_fed = received.get("requirements")
     assert req_fed is not None
     assert req_fed.get("functional") or req_fed.get("key_features"), "architect should have received requirements from previous step"
+    assert req_fed.get("target_users") == ["solo user"]
+    assert req_fed.get("business_goals") == ["Stay organized"]
 
 
 @pytest.mark.asyncio

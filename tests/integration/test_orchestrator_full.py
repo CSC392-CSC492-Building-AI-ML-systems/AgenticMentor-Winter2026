@@ -34,6 +34,7 @@ from src.orchestrator.master_agent import MasterOrchestrator, PHASE_TRANSITION_M
 from src.state.project_state import ArchitectureDefinition, ProjectState, Requirements
 from src.state.state_manager import StateManager
 from src.storage.memory_store import InMemoryPersistenceAdapter
+from src.protocols.schemas import RequirementsState
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,17 @@ class FakeRequirementsCollector:
         self.call_count += 1
         return {
             "response": "I've captured your requirements.",
-            "requirements": None,
+            "requirements": RequirementsState(
+                project_type="web app",
+                target_users=["solo user"],
+                key_features=["Task creation", "Task list"],
+                technical_constraints=["Next.js"],
+                business_goals=["Stay organized"],
+                timeline="2 weeks",
+                budget="$0",
+                is_complete=True,
+                progress=1.0,
+            ),
         }
 
 
@@ -180,6 +191,13 @@ async def test_full_orchestration_multi_turn():
     # Phase: requirements_collector → requirements_complete
     s1 = await persistence.get(session_id)
     assert s1["current_phase"] == "requirements_complete", f"Expected requirements_complete, got {s1['current_phase']}"
+    assert s1["requirements"]["project_type"] == "web app"
+    assert s1["requirements"]["target_users"] == ["solo user"]
+    assert s1["requirements"]["business_goals"] == ["Stay organized"]
+    assert s1["requirements"]["timeline"] == "2 weeks"
+    assert s1["requirements"]["budget"] == "$0"
+    assert s1["requirements"]["is_complete"] is True
+    assert s1["requirements"]["progress"] == pytest.approx(1.0)
     assert len(s1["conversation_history"]) == 2  # user + assistant
     print(f"    phase={s1['current_phase']}, history={len(s1['conversation_history'])} entries ✓")
 

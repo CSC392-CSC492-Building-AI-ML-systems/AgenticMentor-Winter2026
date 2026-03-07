@@ -64,11 +64,18 @@ class Sprint(BaseModel):
 class Requirements(BaseModel):
     """Requirements state fragment."""
 
+    project_type: Optional[str] = None
     functional: List[str] = Field(default_factory=list)
     non_functional: List[str] = Field(default_factory=list)
     constraints: List[str] = Field(default_factory=list)
     user_stories: List[UserStory] = Field(default_factory=list)
     gaps: List[str] = Field(default_factory=list)
+    target_users: List[str] = Field(default_factory=list)
+    business_goals: List[str] = Field(default_factory=list)
+    timeline: Optional[str] = None
+    budget: Optional[str] = None
+    is_complete: bool = False
+    progress: float = 0.0
 
 
 class ArchitectureDefinition(BaseModel):

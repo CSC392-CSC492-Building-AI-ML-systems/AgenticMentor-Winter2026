@@ -209,6 +209,52 @@ class MasterOrchestrator:
             return value.model_dump()
         return {}
 
+    def _requirements_to_collector_state(self, requirements: Any) -> Any:
+        """Translate canonical requirements into the collector's RequirementsState."""
+        from src.protocols.schemas import RequirementsState
+
+        req = self._to_dict(requirements)
+        return RequirementsState(
+            project_type=req.get("project_type"),
+            target_users=req.get("target_users") or [],
+            key_features=req.get("functional") or [],
+            technical_constraints=req.get("constraints") or [],
+            business_goals=req.get("business_goals") or [],
+            timeline=req.get("timeline"),
+            budget=req.get("budget"),
+            is_complete=bool(req.get("is_complete", False)),
+            progress=float(req.get("progress", 0.0) or 0.0),
+        )
+
+    def _collector_state_to_requirements_delta(self, collector_requirements: Any, existing: Any) -> dict:
+        """Merge collector output into canonical requirements without wiping unrelated fields."""
+        current = self._to_dict(existing)
+        if hasattr(collector_requirements, "model_dump"):
+            rs_dump = collector_requirements.model_dump()
+        else:
+            rs_dump = self._to_dict(collector_requirements)
+
+        merged = dict(current)
+        if rs_dump.get("project_type") is not None:
+            merged["project_type"] = rs_dump.get("project_type")
+        if rs_dump.get("key_features") not in (None, []):
+            merged["functional"] = rs_dump.get("key_features") or []
+        if rs_dump.get("technical_constraints") not in (None, []):
+            merged["constraints"] = rs_dump.get("technical_constraints") or []
+        if rs_dump.get("target_users") not in (None, []):
+            merged["target_users"] = rs_dump.get("target_users") or []
+        if rs_dump.get("business_goals") not in (None, []):
+            merged["business_goals"] = rs_dump.get("business_goals") or []
+        if rs_dump.get("timeline") not in (None, ""):
+            merged["timeline"] = rs_dump.get("timeline")
+        if rs_dump.get("budget") not in (None, ""):
+            merged["budget"] = rs_dump.get("budget")
+        if "is_complete" in rs_dump:
+            merged["is_complete"] = bool(rs_dump.get("is_complete"))
+        if "progress" in rs_dump and rs_dump.get("progress") is not None:
+            merged["progress"] = float(rs_dump.get("progress") or 0.0)
+        return merged
+
     def _normalize_mockups(self, entries: list[Any]) -> list[dict]:
         normalized: list[dict] = []
         for entry in entries:
@@ -254,33 +300,18 @@ class MasterOrchestrator:
                 return {"state_delta": state_delta, "content": raw.get("summary") or ""}
 
             if agent_id == "requirements_collector":
-                from src.protocols.schemas import RequirementsState
-
                 req = context.get("requirements")
-                if isinstance(req, dict):
-                    rs = RequirementsState(
-                        key_features=(req.get("functional") or []) + (req.get("non_functional") or []),
-                        technical_constraints=req.get("constraints") or [],
-                    )
-                else:
-                    rs = RequirementsState(
-                        key_features=(getattr(req, "functional", []) or []) + (getattr(req, "non_functional", []) or []),
-                        technical_constraints=getattr(req, "constraints", []) or [],
-                    ) if req else RequirementsState()
+                rs = self._requirements_to_collector_state(req)
                 history = context.get("conversation_history") or []
                 raw = await agent.process_message(user_input, rs, history)
                 req_out = raw.get("requirements")
                 if req_out is None:
                     return {"state_delta": {}, "content": raw.get("response") or ""}
-                rs_dump = req_out.model_dump() if hasattr(req_out, "model_dump") else {}
                 state_delta = {
-                    "requirements": {
-                        "functional": rs_dump.get("key_features", []) or [],
-                        "non_functional": [],
-                        "constraints": rs_dump.get("technical_constraints", []) or [],
-                        "user_stories": [],
-                        "gaps": [],
-                    }
+                    "requirements": self._collector_state_to_requirements_delta(
+                        req_out,
+                        getattr(project_state, "requirements", None) if project_state is not None else req,
+                    )
                 }
                 return {"state_delta": state_delta, "content": raw.get("response") or ""}
 
