@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from src.orchestrator.agent_registry import AgentRegistry
-from src.orchestrator.agent_store import AGENT_STORE, get_agent_by_id
+from src.orchestrator.agent_store import AGENT_STORE, get_agent_by_id, get_producer_for_artifact
 from src.orchestrator.execution_plan import Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
@@ -39,7 +39,7 @@ def _make_llm_if_configured() -> Any:
         s = get_settings()
         if getattr(s, "gemini_api_key", None):
             return ChatGoogleGenerativeAI(
-                model=getattr(s, "model_name", "gemini-2.0-flash"),
+                model=getattr(s, "model_name", "gemini-2.5-flash"),
                 temperature=getattr(s, "model_temperature", 0.2),
                 api_key=s.gemini_api_key,
             )
@@ -88,6 +88,43 @@ class MasterOrchestrator:
             project_state = await self.state.load(session_id)
             if project_state is None:
                 return {"message": "Session not found.", "state_snapshot": None, "artifacts": [], "intent": None, "plan": None, "project_state": None, "agent_results": [], "available_agents": []}
+            available_agents = self._get_available_agents(project_state)
+            selected_entry = get_agent_by_id(selected_agent_id)
+            if selected_entry is None:
+                return {
+                    "message": f"Unknown agent: {selected_agent_id}",
+                    "state_snapshot": project_state.model_dump() if hasattr(project_state, "model_dump") else None,
+                    "artifacts": [],
+                    "intent": {"primary_intent": "manual", "requires_agents": [], "confidence": 0.0},
+                    "plan": None,
+                    "project_state": project_state,
+                    "agent_results": [],
+                    "available_agents": available_agents,
+                }
+            selected_availability = next(
+                (item for item in available_agents if item.get("agent_id") == selected_agent_id),
+                None,
+            )
+            if selected_availability and not selected_availability.get("is_available", False):
+                reason_parts = []
+                if not selected_availability.get("is_phase_compatible", True):
+                    reason_parts.append(
+                        f"not allowed in phase '{getattr(project_state, 'current_phase', 'initialization')}'"
+                    )
+                unmet = selected_availability.get("unmet_requires") or []
+                if unmet:
+                    reason_parts.append(f"missing required context: {', '.join(unmet)}")
+                reason = "; ".join(reason_parts) if reason_parts else "not available right now"
+                return {
+                    "message": f"Agent '{selected_agent_id}' is unavailable: {reason}.",
+                    "state_snapshot": project_state.model_dump() if hasattr(project_state, "model_dump") else None,
+                    "artifacts": [],
+                    "intent": {"primary_intent": "manual", "requires_agents": [selected_agent_id], "confidence": 1.0},
+                    "plan": None,
+                    "project_state": project_state,
+                    "agent_results": [],
+                    "available_agents": available_agents,
+                }
             from src.orchestrator.execution_planner import _resolve_upstream
             resolved_ids = _resolve_upstream([selected_agent_id], project_state)
             from src.orchestrator.execution_plan import ExecutionPlan
@@ -96,7 +133,6 @@ class MasterOrchestrator:
                 entry = get_agent_by_id(aid)
                 plan.add_task(agent_id=aid, required_context=(entry or {}).get("requires") or [])
             intent = {"primary_intent": "manual", "requires_agents": [selected_agent_id], "confidence": 1.0}
-            available_agents = self._get_available_agents(project_state)
             # Persist mode selection
             project_state = await self.state.update(session_id, {"agent_selection_mode": "manual", "selected_agent_id": selected_agent_id})
             graph_result = {"plan": plan, "project_state": project_state, "intent": intent, "error": None}
@@ -241,16 +277,51 @@ class MasterOrchestrator:
         }
 
     def _get_available_agents(self, project_state: Any) -> list[dict]:
-        """Return all agents from AGENT_STORE with their metadata for the UI agent picker."""
+        """Return all agents with phase/dependency readiness metadata for the UI agent picker."""
         agents = []
+        current_phase = getattr(project_state, "current_phase", "initialization")
         for entry in AGENT_STORE:
+            phases = entry.get("phase_compatibility") or []
+            is_phase_compatible = "*" in phases or current_phase in phases
+            unmet_requires = self._unmet_requires(project_state, entry.get("requires") or [])
+            blocked_by = [
+                producer
+                for producer in (get_producer_for_artifact(artifact) for artifact in unmet_requires)
+                if producer
+            ]
             agents.append({
                 "agent_id": entry["id"],
                 "agent_name": entry.get("name", entry["id"]),
                 "description": entry.get("description", ""),
-                "phase_compatibility": entry.get("phase_compatibility") or [],
+                "phase_compatibility": phases,
+                "interaction_mode": entry.get("interaction_mode", "functional"),
+                "supports_selective_regen": bool(entry.get("supports_selective_regen", False)),
+                "expensive": bool(entry.get("expensive", False)),
+                "is_phase_compatible": is_phase_compatible,
+                "unmet_requires": unmet_requires,
+                "blocked_by": blocked_by,
+                "is_available": is_phase_compatible and not unmet_requires,
             })
         return agents
+
+    def _state_has_artifact(self, project_state: Any, key: str) -> bool:
+        if key == "*":
+            return True
+        val = getattr(project_state, key, None)
+        if val is None:
+            return False
+        if isinstance(val, (list, dict)):
+            return len(val) > 0
+        if hasattr(val, "model_dump"):
+            dumped = val.model_dump()
+            if isinstance(dumped, dict):
+                return any(value not in (None, "", [], {}, False) for value in dumped.values())
+        return True
+
+    def _unmet_requires(self, project_state: Any, requires: list[str]) -> list[str]:
+        if "*" in requires:
+            return []
+        return [artifact for artifact in requires if not self._state_has_artifact(project_state, artifact)]
 
     def _extract_context(self, project_state: Any, required_context: list[str]) -> dict:
         """Build context dict from project_state for the given keys; '*' means full state."""

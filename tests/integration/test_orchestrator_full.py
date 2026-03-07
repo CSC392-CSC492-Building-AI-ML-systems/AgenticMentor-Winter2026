@@ -137,6 +137,11 @@ class FakeExporterAgent:
         return Out()
 
 
+class ExplodingArchitectAgent:
+    async def process(self, input_data: dict) -> dict:
+        raise RuntimeError("architect crashed")
+
+
 # ---------------------------------------------------------------------------
 # Registry that tracks get_agent calls
 # ---------------------------------------------------------------------------
@@ -228,7 +233,11 @@ async def test_full_orchestration_multi_turn():
 
     assert "agent_results" in r1
     assert "available_agents" in r1
-    assert len(r1["available_agents"]) == len(AGENT_STORE), "available_agents should list all store agents"
+    assert len(r1["available_agents"]) == len(AGENT_STORE), "available_agents should still expose the full store with readiness metadata"
+    req_agent = next(a for a in r1["available_agents"] if a["agent_id"] == "requirements_collector")
+    arch_agent = next(a for a in r1["available_agents"] if a["agent_id"] == "project_architect")
+    assert req_agent["is_available"] is True
+    assert arch_agent["is_available"] is False
     assert any(ar["agent_id"] == "requirements_collector" for ar in r1["agent_results"])
 
     # Phase: requirements_collector → requirements_complete
@@ -310,8 +319,8 @@ async def test_full_orchestration_multi_turn():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_available_agents_always_returns_full_store():
-    """available_agents in response always contains all AGENT_STORE entries."""
+async def test_available_agents_include_readiness_metadata():
+    """available_agents should expose all agents plus readiness details for the current state."""
     session_id = "test-full-avail"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
@@ -325,12 +334,20 @@ async def test_available_agents_always_returns_full_store():
     store_ids = {e["id"] for e in AGENT_STORE}
     response_ids = {a["agent_id"] for a in r["available_agents"]}
     assert store_ids == response_ids
+    availability = {a["agent_id"]: a for a in r["available_agents"]}
     for a in r["available_agents"]:
         assert "agent_id" in a
         assert "agent_name" in a
         assert "description" in a
         assert "phase_compatibility" in a
-    print(f"  PASS: available_agents has all {len(store_ids)} agents with correct shape")
+        assert "is_available" in a
+        assert "blocked_by" in a
+        assert "unmet_requires" in a
+        assert "is_phase_compatible" in a
+    assert availability["requirements_collector"]["is_available"] is True
+    assert availability["project_architect"]["is_available"] is False
+    assert "requirements" in availability["project_architect"]["unmet_requires"]
+    print(f"  PASS: available_agents exposes readiness metadata for all {len(store_ids)} agents")
 
 
 @pytest.mark.asyncio
@@ -415,17 +432,108 @@ async def test_export_artifacts_persist_when_exporter_runs():
     print("  PASS: export artifacts persist with saved_path, formats, history, and mockups")
 
 
+@pytest.mark.asyncio
+async def test_failure_message_surfaces_issue_summary():
+    """User-facing response should surface structured failure summaries when agents fail."""
+    session_id = "test-full-issues"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="requirements_complete",
+        requirements=Requirements(functional=["Auth"]),
+    )
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = TrackingRegistry(
+        {
+            "project_architect": ExplodingArchitectAgent(),
+            "execution_planner": FakeExecutionPlannerAgent(),
+        }
+    )
+    orch = _make_orch(sm, seed, registry, _plan("project_architect", "execution_planner"), "architecture_design")
+    response = await orch.process_request("Design and plan", session_id)
+
+    assert "Issues:" in response["message"]
+    assert "project_architect: failed_runtime" in response["message"]
+    assert "execution_planner: blocked_dependency" in response["message"]
+    print("  PASS: failure summary stays visible in the user-facing orchestrator message")
+
+
+@pytest.mark.asyncio
+async def test_manual_mode_runs_selected_agent_without_downstream_expansion():
+    """Manual mode should run the selected agent and not append downstream agents automatically."""
+    session_id = "test-full-manual-architect"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="requirements_complete",
+        requirements=Requirements(functional=["Auth"]),
+    )
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = TrackingRegistry(
+        {
+            "project_architect": FakeArchitectAgent(),
+            "execution_planner": FakeExecutionPlannerAgent(),
+        }
+    )
+    orch = _make_manual_orch(sm, registry)
+    response = await orch.process_request(
+        "Run architect only",
+        session_id,
+        agent_selection_mode="manual",
+        selected_agent_id="project_architect",
+    )
+
+    assert response["intent"]["primary_intent"] == "manual"
+    assert "project_architect" in registry.call_log
+    assert "execution_planner" not in registry.call_log
+    print("  PASS: manual mode runs the selected agent without downstream expansion")
+
+
+@pytest.mark.asyncio
+async def test_manual_mode_rejects_unavailable_agent_selection():
+    """Manual mode should reject agents that are not ready in the current phase/state."""
+    session_id = "test-full-manual-unavailable"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+    seed = ProjectState(session_id=session_id, current_phase="initialization", requirements=Requirements())
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = TrackingRegistry({"project_architect": FakeArchitectAgent()})
+    orch = _make_manual_orch(sm, registry)
+    response = await orch.process_request(
+        "Run architect now",
+        session_id,
+        agent_selection_mode="manual",
+        selected_agent_id="project_architect",
+    )
+
+    assert "unavailable" in response["message"]
+    assert response["plan"] is None
+    assert registry.call_log == []
+    architect_entry = next(a for a in response["available_agents"] if a["agent_id"] == "project_architect")
+    assert architect_entry["is_available"] is False
+    assert architect_entry["unmet_requires"] == ["requirements"]
+    print("  PASS: manual mode rejects unavailable agents with readiness details")
+
+
 # ---------------------------------------------------------------------------
 # Standalone runner
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     tests = [
         test_full_orchestration_multi_turn,
-        test_available_agents_always_returns_full_store,
+        test_available_agents_include_readiness_metadata,
         test_phase_transition_map_covers_all_producing_agents,
         test_conversation_history_roles_always_alternate,
         test_agent_results_skipped_for_unimplemented_agents,
         test_export_artifacts_persist_when_exporter_runs,
+        test_failure_message_surfaces_issue_summary,
+        test_manual_mode_runs_selected_agent_without_downstream_expansion,
+        test_manual_mode_rejects_unavailable_agent_selection,
     ]
 
     async def run_all():

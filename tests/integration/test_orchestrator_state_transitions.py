@@ -415,3 +415,31 @@ async def test_after_full_chain_reloaded_state_complete(
     assert reloaded.export_artifacts.saved_path == "outputs/state-transition-export.pdf"
     assert reloaded.export_artifacts.generated_formats == ["markdown", "pdf"]
     assert len(reloaded.export_artifacts.history) == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_mockup_generation_replaces_same_screen_without_duplicates(
+    state_manager, fake_registry, persistence, session_id
+):
+    """Two mockup generations for the same screen_id should keep one stored mockup entry."""
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="architecture_complete",
+        requirements=Requirements(functional=["Login"]),
+        architecture=ArchitectureDefinition(tech_stack={"frontend": "React"}),
+    )
+    await persistence.save(session_id, seed.model_dump())
+    orch = MasterOrchestrator(state_manager, agent_registry=fake_registry, use_llm=False)
+
+    await orch.process_request("create wireframes", session_id)
+    second = await orch.process_request("create wireframes again", session_id)
+
+    snap = second.get("state_snapshot") or {}
+    mockups = snap.get("mockups") or []
+    assert len(mockups) == 1
+    assert mockups[0].get("screen_id") == "login"
+
+    state_manager.cache.clear()
+    reloaded = await state_manager.load(session_id)
+    assert len(reloaded.mockups) == 1
+    assert reloaded.mockups[0].screen_id == "login"

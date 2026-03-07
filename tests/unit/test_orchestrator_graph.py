@@ -147,3 +147,26 @@ async def test_unknown_intent_gets_requirements_fallback(mock_state_manager):
     agent_ids = [t.agent_id for t in out["plan"].tasks]
     assert "requirements_collector" in agent_ids
     assert "exporter" not in agent_ids
+
+
+@pytest.mark.asyncio
+async def test_vague_follow_up_still_stays_on_requirements_collector():
+    """A vague conversational follow-up should stay cheap and route only to requirements collection."""
+
+    class MockSM:
+        async def load(self, sid):
+            return ProjectState(
+                session_id=sid,
+                current_phase="requirements_complete",
+                requirements=Requirements(functional=["Tasks"], constraints=["Next.js"]),
+            )
+
+    graph = build_orchestrator_graph(MockSM(), IntentClassifier(llm=None), ExecutionPlanner())
+    result = await graph.ainvoke(
+        {
+            "user_input": "yes that sounds good",
+            "session_id": "follow-up-1",
+        }
+    )
+    agent_ids = [t.agent_id for t in result["plan"].tasks]
+    assert agent_ids == ["requirements_collector"]
