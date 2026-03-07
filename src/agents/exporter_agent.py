@@ -257,7 +257,8 @@ def compile_markdown_document(
     mockups: Any,
 ) -> str:
     """Build full export markdown from project name, summary, and state fragments."""
-    title = f"# {project_name.upper()} - Comprehensive Project Plan\n"
+    name = (project_name or "Untitled Project").strip() or "Untitled Project"
+    title = f"# {name.upper()} - Comprehensive Project Plan\n"
     exec_summary = f"## Executive Summary\n{summary}\n"
     parts = [title, exec_summary]
     for section in (_requirements_to_markdown(reqs), _architecture_to_markdown(arch), _roadmap_to_markdown(roadmap), _mockups_to_markdown(mockups)):
@@ -317,7 +318,9 @@ class ExporterAgent(BaseAgent):
         """Agent-specific generation logic."""
         print("--- EXPORTER AGENT GENERATING ---", flush=True)
         payload = input if isinstance(input, dict) else context
-        project_name = payload.get("project_name", "Untitled Project")
+        project_name = payload.get("project_name") or "Untitled Project"
+        if not isinstance(project_name, str):
+            project_name = "Untitled Project"
         reqs = self._extract_fragment(payload.get("requirements", {}))
         arch = self._extract_fragment(payload.get("architecture", {}))
         roadmap = self._extract_fragment(payload.get("roadmap", payload.get("plan", {})))
@@ -337,7 +340,7 @@ class ExporterAgent(BaseAgent):
 
         print("  [2/2] Running PDF Exporter Tool...", flush=True)
         pdf_tool = PDFExporter()
-        safe_name = project_name.lower().replace(" ", "_")
+        safe_name = (project_name or "Untitled Project").lower().replace(" ", "_")
         export_dir = "outputs"
         os.makedirs(export_dir, exist_ok=True)
         pdf_destination = os.path.join(export_dir, f"{safe_name}.pdf")
@@ -394,7 +397,10 @@ class ExporterAgent(BaseAgent):
         """Helper to generate a concise summary via LLM. Uses a slice of each payload section."""
         if self.llm_client is None:
             return "Executive summary unavailable (LLM not configured)."
-        system_prompt = "You are a Senior Technical Project Manager. Write a highly concise, 2-paragraph executive summary of the following project."
+        system_prompt = (
+            "You are a Senior Technical Project Manager. Write a highly concise, 2-paragraph executive summary of the following project. "
+            "Describe ONLY what is in the provided Requirements (and Architecture/Roadmap). Do not add features that are not listed—e.g. if 'user authentication' or 'authentication' is not in the Requirements, do not mention it."
+        )
         # Include a bit of every available section (truncated so prompt stays reasonable)
         max_chars = 1000
         reqs_str = json.dumps(reqs)[:max_chars] if reqs else "(none)"

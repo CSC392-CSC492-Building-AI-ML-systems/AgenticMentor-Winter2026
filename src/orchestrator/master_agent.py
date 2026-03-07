@@ -250,7 +250,7 @@ class MasterOrchestrator:
                 "content": result.get("content") or "",
                 "state_delta_keys": list(state_delta.keys()),
             })
-        message = self._synthesize_response(results)
+        message = self._synthesize_response(results, agent_results)
         issue_summary = self._summarize_agent_issues(agent_results)
         if issue_summary:
             message = f"{message} Issues: {issue_summary}" if results else f"Issues: {issue_summary}"
@@ -537,13 +537,33 @@ class MasterOrchestrator:
 
         return None
 
-    def _synthesize_response(self, results: list[dict]) -> str:
-        """Turn agent results into one user-facing message."""
+    def _synthesize_response(
+        self, results: list[dict], agent_results: list[dict] | None = None
+    ) -> str:
+        """Turn agent results into one user-facing message (summarized/formatted for display)."""
         if not results:
             return "No agents ran."
+        max_display_chars = 500
+        use_labels = (
+            agent_results is not None
+            and len(agent_results) == len(results)
+        )
         parts = []
-        for r in results:
-            c = r.get("content") or r.get("summary") or ""
-            if c:
-                parts.append(c.strip())
-        return " ".join(parts) if parts else "Done."
+        for i, r in enumerate(results):
+            c = (r.get("content") or r.get("summary") or "").strip()
+            if not c:
+                continue
+            if len(c) > max_display_chars:
+                c = c[:max_display_chars].rstrip() + "\u2026"
+            label = None
+            if use_labels and i < len(agent_results):
+                label = (agent_results[i].get("agent_name") or agent_results[i].get("agent_id") or "").strip()
+            if label:
+                parts.append(f"**{label}:** {c}")
+            else:
+                parts.append(c)
+        if not parts:
+            return "Done."
+        if len(parts) == 1:
+            return parts[0]
+        return "\n\n".join(parts)

@@ -48,10 +48,11 @@ def build_orchestrator_graph(
         user_input = (state.get("user_input") or "").strip()
         project_state = state.get("project_state")
         current_phase = getattr(project_state, "current_phase", "initialization") if project_state else "initialization"
+        conversation_history = getattr(project_state, "conversation_history", None) or []
         if hasattr(intent_classifier, "analyze_async"):
-            intent = await intent_classifier.analyze_async(user_input, current_phase)
+            intent = await intent_classifier.analyze_async(user_input, current_phase, conversation_history)
         else:
-            intent = intent_classifier.analyze(user_input, current_phase)
+            intent = intent_classifier.analyze(user_input, current_phase, conversation_history)
         return {"intent": intent}
 
     async def build_plan_node(state: OrchestratorState) -> dict:

@@ -120,15 +120,16 @@ class ExecutionPlanner:
         """
         primary_intent = intent.get("primary_intent") or "unknown"
         agent_ids = list(intent.get("requires_agents") or [])
+        expand_downstream = intent.get("expand_downstream", True)
         # Unknown/empty intent should be cheap and conversational: route only to requirements collection,
         # not the full pipeline. This avoids expensive accidental fan-out on ambiguous turns.
         if not agent_ids or primary_intent == "unknown":
             agent_ids = ["requirements_collector"]
 
         phase = getattr(project_state, "current_phase", "initialization")
-        # Resolve upstream deps first. Only expand downstream for non-conversational paths.
+        # Resolve upstream deps first. Expand downstream only when requested (e.g. "only tech stack" -> False).
         resolved = _resolve_upstream(agent_ids, project_state)
-        if primary_intent not in {"unknown", "requirements_gathering"}:
+        if expand_downstream and primary_intent not in {"unknown", "requirements_gathering"}:
             resolved = _resolve_downstream(resolved, project_state)
 
         plan = ExecutionPlan()

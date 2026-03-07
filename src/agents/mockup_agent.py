@@ -268,7 +268,7 @@ Focus on essential MVP screens only (3-5 screens typical).
         
         # Save JSON file
         json_path = output_dir / f"{project_slug}.excalidraw"
-        with open(json_path, "w") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump(excalidraw_json, f, indent=2)
         
         export_paths = {
@@ -459,7 +459,7 @@ Focus on essential MVP screens only (3-5 screens typical).
 </body>
 </html>"""
         
-        with open(html_path, 'w') as f:
+        with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
         # Convert to absolute path
@@ -469,10 +469,10 @@ Focus on essential MVP screens only (3-5 screens typical).
         # Auto-open in browser
         try:
             webbrowser.open(f'file://{html_path_abs}')
-            print(f"  ✓ Preview opened in browser: {html_path.name}", flush=True)
+            print(f"  [OK] Preview opened in browser: {html_path.name}", flush=True)
         except Exception as e:
-            print(f"  ⚠ Could not auto-open browser: {e}", flush=True)
-            print(f"  → Open manually: file://{html_path_abs}", flush=True)
+            print(f"  [WARN] Could not auto-open browser: {e}", flush=True)
+            print(f"  -> Open manually: file://{html_path_abs}", flush=True)
         
         return preview_info
     

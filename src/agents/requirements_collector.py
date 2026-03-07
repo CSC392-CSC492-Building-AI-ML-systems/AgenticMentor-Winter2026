@@ -132,8 +132,12 @@ class RequirementsAgent(BaseAgent):
         
         final_state = await self.graph.ainvoke(initial_state)
         
+        response = final_state["next_question"]
+        if final_state["requirements"].is_complete and not (response or "").strip():
+            response = "Done. We're all set—proceeding with these requirements."
+        
         return {
-            "response": final_state["next_question"],
+            "response": response,
             "requirements": final_state["requirements"],
             "is_complete": final_state["requirements"].is_complete,
             "progress": final_state["requirements"].progress,
@@ -213,20 +217,39 @@ class RequirementsAgent(BaseAgent):
             updated_reqs = json.loads(content.strip())
             current_dict = state["requirements"].model_dump()
             
+            # List fields: replace when LLM returns a new list so corrections (e.g. "no user authentication") take effect
+            list_keys = {"key_features", "technical_constraints", "business_goals", "target_users"}
             merged_count = 0
             for key, value in updated_reqs.items():
-                if value is not None and value != [] and value != "":
+                if key == "pending_confirmation":
+                    current_dict[key] = bool(value)
+                    merged_count += 1
+                elif value is not None and (value != [] or key in list_keys) and value != "":
                     if isinstance(value, list) and key in current_dict:
-                        existing = current_dict.get(key, [])
-                        if isinstance(existing, list):
-                            current_dict[key] = list(set(existing + value))
+                        if key in list_keys:
+                            current_dict[key] = list(value)
                         else:
-                            current_dict[key] = value
+                            existing = current_dict.get(key, [])
+                            current_dict[key] = list(set(existing + value)) if isinstance(existing, list) else value
                     else:
                         current_dict[key] = value
                     merged_count += 1
             
-            state["requirements"] = RequirementsState(**_coerce_requirements_dict(current_dict))
+            reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
+            # Only set pending_confirmation when user asked to fill in AND we're not already past confirmation
+            # (avoids asking for confirmation again after user already confirmed or made a change)
+            progress_before = getattr(state["requirements"], "progress", 0.0)
+            fill_phrases = ("fill in", "pick everything", "pick for me", "you decide", "use defaults", "just pick", "fill in all")
+            msg_lower = (last_user_message or "").lower()
+            if (
+                any(p in msg_lower for p in fill_phrases)
+                and merged_count >= 4
+                and not getattr(reqs, "pending_confirmation", False)
+                and progress_before < 0.85
+            ):
+                current_dict["pending_confirmation"] = True
+                reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
+            state["requirements"] = reqs
             print(f"Merged {merged_count} requirement updates")
             
         except (json.JSONDecodeError, ValueError) as e:
@@ -262,6 +285,9 @@ class RequirementsAgent(BaseAgent):
             current_dict = state["requirements"].model_dump()
             current_dict["is_complete"] = completion_data.get("is_complete", False)
             current_dict["progress"] = completion_data.get("completeness_score", 0.0)
+            # When user asked us to fill in defaults, don't mark complete until they confirm
+            if getattr(state["requirements"], "pending_confirmation", False):
+                current_dict["is_complete"] = False
             
             state["requirements"] = RequirementsState(**current_dict)
             
@@ -278,18 +304,41 @@ class RequirementsAgent(BaseAgent):
         return state
     
     async def _generate_question_node(self, state: AgentState) -> AgentState:
-        """Node 4: Generate the next question to ask the user."""
+        """Node 4: Generate the next question to ask the user (or ask for confirmation when we filled defaults)."""
         print("STEP 4")
         print("[QUESTION] Generating next question...")
         
-        conv_history = format_conversation_history(
-            [{"role": m.type, "content": m.content} for m in state["messages"]]
-        )
+        reqs = state["requirements"]
+        pending = getattr(reqs, "pending_confirmation", False)
         
-        question_prompt = f"""Based on the current requirements and conversation, generate the NEXT SINGLE QUESTION to ask.
+        if pending:
+            # Ask user to confirm the filled-in defaults before proceeding
+            question_prompt = f"""The user asked you to fill in the details. You have filled in the following. Summarize briefly and ask them to confirm.
+
+Current Requirements (what we assumed):
+{reqs.model_dump_json(indent=2)}
+
+Generate ONE short, friendly message that: (1) briefly summarizes the key choices (e.g. project type, target users, main features), (2) asks "Does this work for you, or would you like to change anything?" Return ONLY that message, nothing else."""
+            messages = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=question_prompt),
+            ]
+            response = await self.llm.ainvoke(messages)
+            question = response.content.strip().strip('"\'')
+            state["next_question"] = question
+            state["messages"].append(AIMessage(content=question))
+            # Clear pending_confirmation so that when user says "yes" we can mark complete
+            current_dict = reqs.model_dump()
+            current_dict["pending_confirmation"] = False
+            state["requirements"] = RequirementsState(**_coerce_requirements_dict(current_dict))
+        else:
+            conv_history = format_conversation_history(
+                [{"role": m.type, "content": m.content} for m in state["messages"]]
+            )
+            question_prompt = f"""Based on the current requirements and conversation, generate the NEXT SINGLE QUESTION to ask.
 
 Current Requirements:
-{state["requirements"].model_dump_json(indent=2)}
+{reqs.model_dump_json(indent=2)}
 
 Recent Conversation:
 {conv_history}
@@ -297,28 +346,30 @@ Recent Conversation:
 Generate ONE clear, focused question that will help gather the most important missing information.
 Make it conversational and natural. Build on what you already know.
 Return ONLY the question text, nothing else."""
+            messages = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=question_prompt),
+            ]
+            response = await self.llm.ainvoke(messages)
+            question = response.content.strip().strip('"\'')
+            state["next_question"] = question
+            state["messages"].append(AIMessage(content=question))
         
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=question_prompt)
-        ]
-        
-        response = await self.llm.ainvoke(messages)
-        question = response.content.strip().strip('"\'')
-        
-        state["next_question"] = question
-        state["messages"].append(AIMessage(content=question))
-        
-        print(f"Question: '{question[:200]}...'")
+        print(f"Question: '{state['next_question'][:200]}...'")
         return state
     
     def _should_continue(self, state: AgentState) -> str:
         """Determine if we should continue asking questions or end."""
-        if state["requirements"].is_complete or state["requirements"].progress >= 0.85:
+        reqs = state["requirements"]
+        # When we filled defaults, ask for confirmation before marking complete
+        if getattr(reqs, "pending_confirmation", False):
+            print("Pending confirmation—asking user to confirm filled-in details")
+            return "continue"
+        if reqs.is_complete or reqs.progress >= 0.85:
             print("Requirements gathering complete")
             return "complete"
         
-        print(f"Continuing (progress: {state['requirements'].progress:.0%})")
+        print(f"Continuing (progress: {reqs.progress:.0%})")
         return "continue"
     
     async def process_message(
