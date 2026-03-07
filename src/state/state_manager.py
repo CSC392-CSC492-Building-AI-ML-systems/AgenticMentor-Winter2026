@@ -81,8 +81,11 @@ class StateManager:
 
     def _merged_value(self, current: Any, value: Any) -> Any:
         if isinstance(current, BaseModel) and isinstance(value, dict):
-            # Preserve pydantic model types on updates.
-            return current.model_copy(update=value)
+            # Rebuild the model from merged data so nested fragments are re-validated
+            # into their canonical Pydantic types instead of drifting into raw dicts/lists.
+            merged = current.model_dump()
+            merged.update(value)
+            return current.__class__(**merged)
         if isinstance(current, list):
             merged = list(current)
             merged.extend(value if isinstance(value, list) else [value])

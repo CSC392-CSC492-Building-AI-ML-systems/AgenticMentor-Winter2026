@@ -24,7 +24,7 @@ INTENT_PATTERNS = {
     },
     "execution_planning": {
         "keywords": ["roadmap", "timeline", "milestone", "sprint"],
-        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete"],
+        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete", "design_complete"],
         "triggers": ["how long", "when", "priority"]
     },
     "export": {
