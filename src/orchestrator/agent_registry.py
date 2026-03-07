@@ -21,6 +21,23 @@ class AgentRegistry:
             self._cache[agent_id] = agent
         return agent
 
+    def _make_gemini_client(self) -> Any | None:
+        try:
+            from src.adapters.llm_clients import GeminiClient
+            from src.utils.config import get_settings
+
+            settings = get_settings()
+            api_key = getattr(settings, "gemini_api_key", None)
+            if not api_key:
+                return None
+            return GeminiClient(
+                model="gemini-2.0-flash",
+                temperature=0.2,
+                google_api_key=api_key,
+            )
+        except Exception:
+            return None
+
     def _create_agent(self, agent_id: str) -> Any | None:
         if agent_id == "requirements_collector":
             try:
@@ -31,9 +48,10 @@ class AgentRegistry:
 
         if agent_id == "project_architect":
             try:
-                from src.adapters.llm_clients import GeminiClient
                 from src.agents.project_architect import ProjectArchitectAgent
-                llm = GeminiClient(model="gemini-2.0-flash", temperature=0.2)
+                llm = self._make_gemini_client()
+                if llm is None:
+                    return None
                 return ProjectArchitectAgent(state_manager=self._state_manager, llm_client=llm)
             except Exception:
                 return None
@@ -47,9 +65,8 @@ class AgentRegistry:
 
         if agent_id == "mockup_agent":
             try:
-                from src.adapters.llm_clients import GeminiClient
                 from src.agents.mockup_agent import MockupAgent
-                llm = GeminiClient(model="gemini-2.0-flash", temperature=0.2)
+                llm = self._make_gemini_client()
                 return MockupAgent(state_manager=self._state_manager, llm_client=llm)
             except Exception:
                 # Mockup agent supports llm_client=None fallback mode.

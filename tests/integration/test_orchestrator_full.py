@@ -328,7 +328,7 @@ async def test_conversation_history_roles_always_alternate():
 
 @pytest.mark.asyncio
 async def test_agent_results_skipped_for_unimplemented_agents():
-    """Unimplemented agents (registry returns None) appear as 'skipped' in agent_results."""
+    """Unimplemented agents (registry returns None) appear as 'skipped_unavailable' in agent_results."""
     session_id = "test-full-skip"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
@@ -340,10 +340,10 @@ async def test_agent_results_skipped_for_unimplemented_agents():
     orch = _make_orch(sm, seed, registry, _plan("project_architect", "execution_planner"))
     r = await orch.process_request("Design and plan", session_id)
 
-    skipped = [ar for ar in r["agent_results"] if ar["status"] == "skipped"]
+    skipped = [ar for ar in r["agent_results"] if ar["status"] == "skipped_unavailable"]
     assert any(ar["agent_id"] == "execution_planner" for ar in skipped), \
-        "execution_planner should be 'skipped' when registry returns None"
-    print(f"  PASS: unimplemented agents appear as 'skipped' in agent_results")
+        "execution_planner should be 'skipped_unavailable' when registry returns None"
+    print(f"  PASS: unimplemented agents appear as 'skipped_unavailable' in agent_results")
 
 
 # ---------------------------------------------------------------------------

@@ -76,6 +76,17 @@ class FakeExecutionPlannerAgent:
         }
 
 
+class ExplodingArchitectAgent:
+    async def process(self, input_data: dict) -> dict:
+        raise RuntimeError("architect boom")
+
+
+class SlowArchitectAgent:
+    async def process(self, input_data: dict) -> dict:
+        await asyncio.sleep(0.05)
+        return {"state_delta": {}, "summary": "Too slow"}
+
+
 class CapturingRegistry:
     """Registry that tracks which agents were instantiated/called."""
 
@@ -282,8 +293,79 @@ async def test_agent_results_populated_for_all_ran_agents():
     assert "execution_planner" in agent_result_ids
 
     for ar in response["agent_results"]:
-        assert ar["status"] in ("success", "skipped", "error")
+        assert ar["status"] in (
+            "success",
+            "skipped_unavailable",
+            "failed_runtime",
+            "failed_timeout",
+            "blocked_dependency",
+        )
     print(f"  PASS: agent_results populated for all agents: {agent_result_ids}")
+
+
+@pytest.mark.asyncio
+async def test_downstream_blocked_when_upstream_fails():
+    """If architect fails, downstream execution_planner is marked blocked_dependency."""
+    session_id = "test-35-blocked"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="requirements_complete",
+        requirements=Requirements(functional=["Auth"]),
+    )
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = CapturingRegistry({
+        "project_architect": ExplodingArchitectAgent(),
+        "execution_planner": FakeExecutionPlannerAgent(),
+    })
+    plan = _plan_with_agents("project_architect", "execution_planner")
+    orch = _make_orchestrator(sm, seed, registry, plan)
+
+    response = await orch.process_request("Design and plan", session_id)
+
+    arch_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "project_architect")
+    exec_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "execution_planner")
+    assert arch_result["status"] == "failed_runtime"
+    assert exec_result["status"] == "blocked_dependency"
+    state_dict = await persistence.get(session_id)
+    assert state_dict["current_phase"] == "requirements_complete"
+    print("  PASS: downstream agent blocked after upstream runtime failure")
+
+
+@pytest.mark.asyncio
+async def test_timeout_marks_agent_failed_timeout():
+    """Orchestrator-level timeout should mark the agent as failed_timeout."""
+    from src.orchestrator import master_agent as master_agent_module
+
+    session_id = "test-35-timeout"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="requirements_complete",
+        requirements=Requirements(functional=["Auth"]),
+    )
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = CapturingRegistry({"project_architect": SlowArchitectAgent()})
+    plan = _plan_with_agents("project_architect")
+    orch = _make_orchestrator(sm, seed, registry, plan)
+
+    original_timeout = master_agent_module.AGENT_TIMEOUT_SECONDS["project_architect"]
+    master_agent_module.AGENT_TIMEOUT_SECONDS["project_architect"] = 0.01
+    try:
+        response = await orch.process_request("Generate architecture", session_id)
+    finally:
+        master_agent_module.AGENT_TIMEOUT_SECONDS["project_architect"] = original_timeout
+
+    arch_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "project_architect")
+    assert arch_result["status"] == "failed_timeout"
+    assert "Timed out" in arch_result.get("error", "")
+    print("  PASS: orchestrator timeout marks agent as failed_timeout")
 
 
 @pytest.mark.asyncio
@@ -341,6 +423,8 @@ if __name__ == "__main__":
         test_phase_transitions_after_architect,
         test_change_request_reruns_downstream,
         test_agent_results_populated_for_all_ran_agents,
+        test_downstream_blocked_when_upstream_fails,
+        test_timeout_marks_agent_failed_timeout,
         test_manual_mode_only_runs_selected_agent,
     ]
 

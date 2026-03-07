@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -19,6 +20,14 @@ PHASE_TRANSITION_MAP: dict[str, str] = {
     "execution_planner": "planning_complete",
     "mockup_agent": "design_complete",
     "exporter": "exportable",
+}
+
+AGENT_TIMEOUT_SECONDS: dict[str, float] = {
+    "requirements_collector": 45.0,
+    "project_architect": 150.0,
+    "execution_planner": 90.0,
+    "mockup_agent": 150.0,
+    "exporter": 90.0,
 }
 
 
@@ -123,15 +132,72 @@ class MasterOrchestrator:
             }
         results = []
         agent_results = []
+        blocked_artifacts: set[str] = set()
         for task in plan.tasks:
+            if self._is_blocked_by_dependency(task.required_context, blocked_artifacts):
+                entry = get_agent_by_id(task.agent_id)
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "blocked_dependency",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "blocked_by": sorted(blocked_artifacts),
+                })
+                continue
             agent = self.registry.get_agent(task.agent_id) if hasattr(self.registry, "get_agent") else None
             if agent is None:
-                agent_results.append({"agent_id": task.agent_id, "status": "skipped", "content": "", "state_delta_keys": []})
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                entry = get_agent_by_id(task.agent_id)
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "skipped_unavailable",
+                    "content": "",
+                    "state_delta_keys": [],
+                })
                 continue
             context = self._extract_context(project_state, task.required_context)
-            result = await self._run_agent(task, context, user_input or "", agent, project_state=project_state)
+            entry = get_agent_by_id(task.agent_id)
+            try:
+                timeout_seconds = AGENT_TIMEOUT_SECONDS.get(task.agent_id, 120.0)
+                result = await asyncio.wait_for(
+                    self._run_agent(task, context, user_input or "", agent, project_state=project_state),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "failed_timeout",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "error": f"Timed out after {timeout_seconds:.0f}s",
+                })
+                continue
+            except Exception as exc:
+                print(f"[orchestrator] agent '{task.agent_id}' failed: {type(exc).__name__}: {exc}", flush=True)
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "failed_runtime",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                continue
             if not result:
-                agent_results.append({"agent_id": task.agent_id, "status": "error", "content": "", "state_delta_keys": []})
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "failed_runtime",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "error": "Agent returned no result",
+                })
                 continue
             state_delta = result.get("state_delta") or {}
             if state_delta:
@@ -141,7 +207,6 @@ class MasterOrchestrator:
             if next_phase:
                 project_state = await self.state.update(session_id, {"current_phase": next_phase})
             results.append(result)
-            entry = get_agent_by_id(task.agent_id)
             agent_results.append({
                 "agent_id": task.agent_id,
                 "agent_name": (entry or {}).get("name", task.agent_id),
@@ -150,6 +215,9 @@ class MasterOrchestrator:
                 "state_delta_keys": list(state_delta.keys()),
             })
         message = self._synthesize_response(results)
+        issue_summary = self._summarize_agent_issues(agent_results)
+        if issue_summary:
+            message = f"{message} Issues: {issue_summary}" if results else f"Issues: {issue_summary}"
         # 3.3 Conversation history: append user + assistant turns and persist.
         # We set the field directly (bypassing StateManager's list-extend merge)
         # so re-running process_request never double-appends old entries.
@@ -208,6 +276,28 @@ class MasterOrchestrator:
         if hasattr(value, "model_dump"):
             return value.model_dump()
         return {}
+
+    def _produced_artifacts(self, agent_id: str) -> list[str]:
+        entry = get_agent_by_id(agent_id) or {}
+        return list(entry.get("produces") or [])
+
+    def _is_blocked_by_dependency(self, required_context: list[str], blocked_artifacts: set[str]) -> bool:
+        if not blocked_artifacts:
+            return False
+        if "*" in (required_context or []):
+            return True
+        return any(key.split(".")[0] in blocked_artifacts for key in (required_context or []))
+
+    def _summarize_agent_issues(self, agent_results: list[dict]) -> str:
+        issues = []
+        for ar in agent_results:
+            status = ar.get("status") or ""
+            if status == "success":
+                continue
+            agent_id = ar.get("agent_id") or "agent"
+            detail = ar.get("error") or ar.get("blocked_by")
+            issues.append(f"{agent_id}: {status}{f' ({detail})' if detail else ''}")
+        return "; ".join(issues)
 
     def _requirements_to_collector_state(self, requirements: Any) -> Any:
         """Translate canonical requirements into the collector's RequirementsState."""
@@ -284,100 +374,95 @@ class MasterOrchestrator:
     ) -> dict | None:
         """Run agent for task; return { state_delta, content } or None."""
         agent_id = task.agent_id
-        try:
-            if agent_id == "project_architect":
-                req = context.get("requirements")
-                req_dict = req if isinstance(req, dict) else (req.model_dump() if hasattr(req, "model_dump") else {})
-                input_data = {
-                    "requirements": req_dict,
-                    "existing_architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
-                    "user_request": user_input,
-                }
-                raw = await agent.process(input_data)
-                state_delta = raw.get("state_delta") or {}
-                if not state_delta and raw.get("architecture") is not None:
-                    state_delta = {"architecture": raw["architecture"]}
-                return {"state_delta": state_delta, "content": raw.get("summary") or ""}
+        if agent_id == "project_architect":
+            req = context.get("requirements")
+            req_dict = req if isinstance(req, dict) else (req.model_dump() if hasattr(req, "model_dump") else {})
+            input_data = {
+                "requirements": req_dict,
+                "existing_architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                "user_request": user_input,
+            }
+            raw = await agent.process(input_data)
+            state_delta = raw.get("state_delta") or {}
+            if not state_delta and raw.get("architecture") is not None:
+                state_delta = {"architecture": raw["architecture"]}
+            return {"state_delta": state_delta, "content": raw.get("summary") or ""}
 
-            if agent_id == "requirements_collector":
-                req = context.get("requirements")
-                rs = self._requirements_to_collector_state(req)
-                history = context.get("conversation_history") or []
-                raw = await agent.process_message(user_input, rs, history)
-                req_out = raw.get("requirements")
-                if req_out is None:
-                    return {"state_delta": {}, "content": raw.get("response") or ""}
-                state_delta = {
-                    "requirements": self._collector_state_to_requirements_delta(
-                        req_out,
-                        getattr(project_state, "requirements", None) if project_state is not None else req,
-                    )
-                }
-                return {"state_delta": state_delta, "content": raw.get("response") or ""}
-
-            if agent_id == "execution_planner":
-                payload = {
-                    "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
-                    "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
-                    "existing_roadmap": context.get("roadmap") or self._to_dict(getattr(project_state, "roadmap", None)),
-                    "user_request": user_input,
-                }
-                raw = await agent.process(payload)
-                state_delta = raw.get("state_delta") or {}
-                if not state_delta and raw.get("roadmap") is not None:
-                    state_delta = {"roadmap": raw.get("roadmap")}
-                return {
-                    "state_delta": state_delta,
-                    "content": raw.get("summary") or raw.get("content") or "",
-                }
-
-            if agent_id == "mockup_agent":
-                payload = {
-                    "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
-                    "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
-                    "platform": "web",
-                    "user_request": user_input,
-                }
-                raw = await agent.process(payload)
-                state_delta = raw.get("state_delta") or {}
-                if isinstance(state_delta.get("mockups"), list):
-                    state_delta = dict(state_delta)
-                    state_delta["mockups"] = self._normalize_mockups(state_delta["mockups"])
-                return {
-                    "state_delta": state_delta,
-                    "content": raw.get("summary") or raw.get("content") or "",
-                }
-
-            if agent_id == "exporter":
-                payload = (
-                    project_state.model_dump()
-                    if project_state is not None and hasattr(project_state, "model_dump")
-                    else dict(context)
+        if agent_id == "requirements_collector":
+            req = context.get("requirements")
+            rs = self._requirements_to_collector_state(req)
+            history = context.get("conversation_history") or []
+            raw = await agent.process_message(user_input, rs, history)
+            req_out = raw.get("requirements")
+            if req_out is None:
+                return {"state_delta": {}, "content": raw.get("response") or ""}
+            state_delta = {
+                "requirements": self._collector_state_to_requirements_delta(
+                    req_out,
+                    getattr(project_state, "requirements", None) if project_state is not None else req,
                 )
-                payload["user_request"] = user_input
+            }
+            return {"state_delta": state_delta, "content": raw.get("response") or ""}
 
-                if hasattr(agent, "execute"):
-                    exec_out = await agent.execute(payload, context=payload, tools=[])
-                    raw_content = getattr(exec_out, "content", {})
-                    state_delta = getattr(exec_out, "state_delta", {}) or {}
-                    if isinstance(raw_content, dict):
-                        content = raw_content.get("summary") or raw_content.get("content") or ""
-                        if not state_delta:
-                            state_delta = raw_content.get("state_delta") or {}
-                    else:
-                        content = str(raw_content) if raw_content is not None else ""
-                    return {"state_delta": state_delta, "content": content}
+        if agent_id == "execution_planner":
+            payload = {
+                "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
+                "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                "existing_roadmap": context.get("roadmap") or self._to_dict(getattr(project_state, "roadmap", None)),
+                "user_request": user_input,
+            }
+            raw = await agent.process(payload)
+            state_delta = raw.get("state_delta") or {}
+            if not state_delta and raw.get("roadmap") is not None:
+                state_delta = {"roadmap": raw.get("roadmap")}
+            return {
+                "state_delta": state_delta,
+                "content": raw.get("summary") or raw.get("content") or "",
+            }
 
-                if hasattr(agent, "process"):
-                    raw = await agent.process(payload)
-                    return {
-                        "state_delta": raw.get("state_delta") or {},
-                        "content": raw.get("summary") or raw.get("content") or "",
-                    }
+        if agent_id == "mockup_agent":
+            payload = {
+                "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
+                "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                "platform": "web",
+                "user_request": user_input,
+            }
+            raw = await agent.process(payload)
+            state_delta = raw.get("state_delta") or {}
+            if isinstance(state_delta.get("mockups"), list):
+                state_delta = dict(state_delta)
+                state_delta["mockups"] = self._normalize_mockups(state_delta["mockups"])
+            return {
+                "state_delta": state_delta,
+                "content": raw.get("summary") or raw.get("content") or "",
+            }
 
-        except Exception as exc:
-            print(f"[orchestrator] agent '{agent_id}' failed: {type(exc).__name__}: {exc}", flush=True)
-            return None
+        if agent_id == "exporter":
+            payload = (
+                project_state.model_dump()
+                if project_state is not None and hasattr(project_state, "model_dump")
+                else dict(context)
+            )
+            payload["user_request"] = user_input
+
+            if hasattr(agent, "execute"):
+                exec_out = await agent.execute(payload, context=payload, tools=[])
+                raw_content = getattr(exec_out, "content", {})
+                state_delta = getattr(exec_out, "state_delta", {}) or {}
+                if isinstance(raw_content, dict):
+                    content = raw_content.get("summary") or raw_content.get("content") or ""
+                    if not state_delta:
+                        state_delta = raw_content.get("state_delta") or {}
+                else:
+                    content = str(raw_content) if raw_content is not None else ""
+                return {"state_delta": state_delta, "content": content}
+
+            if hasattr(agent, "process"):
+                raw = await agent.process(payload)
+                return {
+                    "state_delta": raw.get("state_delta") or {},
+                    "content": raw.get("summary") or raw.get("content") or "",
+                }
 
         return None
 

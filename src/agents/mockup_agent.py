@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, Optional
 from pathlib import Path
 from src.agents.base_agent import BaseAgent
@@ -10,6 +11,7 @@ class MockupAgent(BaseAgent):
     """Generates UI wireframes as Excalidraw scenes."""
     
     description = "Generates UI wireframes and user flows."
+    _LLM_TIMEOUT_SECONDS = 120
     
     def __init__(
         self,
@@ -533,11 +535,19 @@ Focus on essential MVP screens only (3-5 screens typical).
     
     async def _invoke_llm(self, prompt: str) -> str:
         """Invoke LLM client."""
-        # Simplified - actual implementation depends on your LLM client
-        if hasattr(self.llm_client, "ainvoke"):
-            response = await self.llm_client.ainvoke(prompt)
-            return response.content if hasattr(response, "content") else str(response)
-        return ""
+        async def _call():
+            if hasattr(self.llm_client, "generate"):
+                return await self.llm_client.generate(prompt)
+            if hasattr(self.llm_client, "ainvoke"):
+                return await self.llm_client.ainvoke(prompt)
+            return ""
+
+        response = await asyncio.wait_for(_call(), timeout=self._LLM_TIMEOUT_SECONDS)
+        if hasattr(response, "content"):
+            return response.content
+        if isinstance(response, str):
+            return response
+        return str(response)
     
     # BaseAgent interface
     

@@ -68,6 +68,14 @@ async def main() -> None:
         response = await orchestrator.process_request(user_input, session_id)
         message = response.get("message") or ""
         print(f"Bot: {message}\n")
+        agent_results = response.get("agent_results") or []
+        if agent_results:
+            print("Agent results:")
+            for item in agent_results:
+                detail = item.get("error") or item.get("blocked_by")
+                suffix = f" ({detail})" if detail else ""
+                print(f"  - {item.get('agent_id')}: {item.get('status')}{suffix}")
+            print()
 
 
 if __name__ == "__main__":
