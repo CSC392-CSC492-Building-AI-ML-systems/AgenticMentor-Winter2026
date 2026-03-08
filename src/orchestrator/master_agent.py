@@ -44,6 +44,14 @@ CONTINUE_PHRASES = (
     "approved continue",
 )
 
+AUTO_FLOW_SEQUENCE = (
+    "requirements_collector",
+    "project_architect",
+    "execution_planner",
+    "mockup_agent",
+    "exporter",
+)
+
 
 def _make_llm_if_configured() -> Any:
     """Build a LangChain ChatGoogleGenerativeAI if Gemini API key is set; else None."""
@@ -292,7 +300,10 @@ class MasterOrchestrator:
                 project_state = await self.state.update(session_id, state_delta)
             # 3.2 Phase transition: update current_phase after agent completes.
             next_phase = PHASE_TRANSITION_MAP.get(task.agent_id)
-            if next_phase:
+            should_advance_phase = bool(next_phase)
+            if task.agent_id == "requirements_collector":
+                should_advance_phase = bool(next_phase) and self._requirements_ready_for_handoff(project_state)
+            if should_advance_phase:
                 project_state = await self.state.update(session_id, {"current_phase": next_phase})
             results.append(result)
             agent_results.append({
@@ -307,8 +318,12 @@ class MasterOrchestrator:
         if agent_selection_mode == "auto" and tasks_to_run:
             executed = agent_results[0] if agent_results else None
             remaining_plan = planned_tasks[1:]
-            next_agent_id = remaining_plan[0].agent_id if remaining_plan else None
             if executed and executed.get("status") == "success":
+                next_agent_id = self._resolve_next_auto_agent_id(
+                    executed.get("agent_id"),
+                    project_state,
+                    remaining_plan,
+                )
                 project_state = await self.state.update(
                     session_id,
                     {
@@ -502,6 +517,33 @@ class MasterOrchestrator:
             f"or say 'continue' to move to {next_name}."
         )
 
+    def _resolve_next_auto_agent_id(
+        self,
+        completed_agent_id: str | None,
+        project_state: Any,
+        remaining_plan: list[Task],
+    ) -> str | None:
+        default_next = self._get_default_next_agent_id(completed_agent_id, project_state)
+        if default_next:
+            return default_next
+        return remaining_plan[0].agent_id if remaining_plan else None
+
+    def _get_default_next_agent_id(self, completed_agent_id: str | None, project_state: Any) -> str | None:
+        if completed_agent_id not in AUTO_FLOW_SEQUENCE:
+            return None
+        if completed_agent_id == "requirements_collector" and not self._requirements_ready_for_handoff(project_state):
+            return None
+        current_index = AUTO_FLOW_SEQUENCE.index(completed_agent_id)
+        if current_index + 1 >= len(AUTO_FLOW_SEQUENCE):
+            return None
+        return AUTO_FLOW_SEQUENCE[current_index + 1]
+
+    def _requirements_ready_for_handoff(self, project_state: Any) -> bool:
+        if getattr(project_state, "current_phase", None) == "requirements_complete":
+            return True
+        requirements = getattr(project_state, "requirements", None)
+        return bool(getattr(requirements, "is_complete", False))
+
     async def _summarize_single_step(
         self,
         agent_result: dict,
@@ -611,6 +653,13 @@ class MasterOrchestrator:
         if agent_id == "requirements_collector":
             requirements = self._to_dict(getattr(project_state, "requirements", None))
             features = requirements.get("functional") or []
+            if self._requirements_ready_for_handoff(project_state) and next_agent_id:
+                return (
+                    f"Requirements are complete. I now have {len(features)} core functional requirements plus the "
+                    "current goals, users, constraints, timeline, and budget for the project. "
+                    "The frontend can now render the completed requirements summary for review. "
+                    f"{next_prompt}"
+                )
             return (
                 f"Requirements are updated. I now have {len(features)} core functional requirements and the latest "
                 "constraints, goals, and user context for the project. "
