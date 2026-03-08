@@ -1,25 +1,32 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 import uuid
 from datetime import datetime
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# CRITICAL: Load .env before importing project modules so the adapter 
+# sees the credentials during its initialization phase.
+load_dotenv()
 
 from src.protocols.schemas import (
     ProjectCreate,
     ProjectResponse,
     ChatRequest,
-    ChatResponse,
     ProjectState,
-    RequirementsState,
-    ChatMessage,
-    MessageRole,
 )
 from src.utils.config import settings
-from src.agents.requirements_collector import get_agent
-from src.storage.memory_store import default_memory_adapter
 
+# Import the StateManager and MasterOrchestrator for Phase 4
+from src.state.persistence import get_default_adapter
+from src.state.state_manager import StateManager
+from src.orchestrator.master_agent import MasterOrchestrator
 
-projects_store: dict[str, ProjectState] = {}
+# Initialize the adapter, state manager, and orchestrator in the correct order
+db_adapter = get_default_adapter()
+state_manager = StateManager(db_adapter)
+orchestrator = MasterOrchestrator(state_manager)
 
 
 @asynccontextmanager
@@ -32,7 +39,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AgenticMentor API",
-    description="AI-powered project requirements collection system",
+    description="AI-powered multi-agent project generation system",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -44,7 +51,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.get("/health")
 async def health_check():
@@ -58,126 +64,98 @@ async def health_check():
 
 @app.post("/projects", response_model=ProjectResponse, status_code=201)
 async def create_project(project: ProjectCreate):
-    """Create a new project and return project_id."""
-    project_id = str(uuid.uuid4())
+    """Create a new project and initialize state."""
+    # Align with the DB session_id primary key
+    session_id = f"session_{uuid.uuid4().hex[:12]}"
     
-    project_state = ProjectState(
-        project_id=project_id,
-        name=project.name,
+    # Initialize state through the StateManager cache/DB
+    state = await state_manager.load(session_id)
+    
+    # Use dotted-path updates to map description to requirements.project_type
+    delta = {
+        "project_name": project.name,
+        "requirements.project_type": project.description,
+        "current_phase": "initialization"
+    }
+    state = await state_manager.update(session_id, delta)
+
+    # Ensure requirements is a dict for the Response model
+    req_dict = state.requirements.model_dump() if hasattr(state.requirements, "model_dump") else state.requirements
+
+    return ProjectResponse(
+        project_id=state.session_id,
+        name=state.project_name,
         description=project.description,
-        requirements=RequirementsState(),
-        decisions=[],
-        assumptions=[],
-        conversation_history=[],
-        created_at=datetime.now(),
-        last_updated=datetime.now(),
-    )
-
-    # Persist the created project via the in-memory adapter
-    await default_memory_adapter.save(project_id, project_state.model_dump())
-
-    return ProjectResponse(
-        project_id=project_state.project_id,
-        name=project_state.name,
-        description=project_state.description,
-        created_at=project_state.created_at,
-        last_updated=project_state.last_updated,
-        requirements=project_state.requirements,
+        created_at=state.created_at,
+        last_updated=state.updated_at,
+        requirements=req_dict,
     )
 
 
-@app.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str):
+@app.get("/projects/{session_id}", response_model=ProjectResponse)
+async def get_project(session_id: str):
     """Get project state by ID."""
-    state_dict = await default_memory_adapter.get(project_id)
-    if not state_dict:
+    state = await state_manager.load(session_id)
+    
+    if not state.project_name: 
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project_state = ProjectState(**state_dict)
+    # Recover the description from the JSONB field project_type
+    description = state.requirements.project_type if state.requirements else ""
+    req_dict = state.requirements.model_dump() if hasattr(state.requirements, "model_dump") else state.requirements
 
     return ProjectResponse(
-        project_id=project_state.project_id,
-        name=project_state.name,
-        description=project_state.description,
-        created_at=project_state.created_at,
-        last_updated=project_state.last_updated,
-        requirements=project_state.requirements,
+        project_id=state.session_id,
+        name=state.project_name,
+        description=description,
+        created_at=state.created_at,
+        last_updated=state.updated_at,
+        requirements=req_dict,
     )
 
 
-@app.post("/projects/{project_id}/chat", response_model=ChatResponse)
-async def chat(project_id: str, request: ChatRequest):
-    """Send a message and get agent response."""
-    state_dict = await default_memory_adapter.get(project_id)
-    if not state_dict:
+@app.post("/projects/{session_id}/chat")
+async def chat(session_id: str, request: ChatRequest):
+    """Route message through Orchestrator to the correct agent."""
+    state = await state_manager.load(session_id)
+    if not state.project_name:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project_state = ProjectState(**state_dict)
-    user_message = ChatMessage(
-        role=MessageRole.USER,
-        content=request.message,
-        timestamp=datetime.now()
-    )
-    project_state.conversation_history.append(user_message)
-
-    agent = get_agent()
-    
     try:
-        result = await agent.process_message(
-            user_message=request.message,
-            current_requirements=project_state.requirements,
-            conversation_history=project_state.conversation_history
+        # Corrected method call to process_request per master_agent definition
+        response = await orchestrator.process_request(
+            user_input=request.message,
+            session_id=session_id
         )
         
-        project_state.requirements = result["requirements"]
-        project_state.decisions.extend(result["decisions"])
-        project_state.assumptions.extend(result["assumptions"])
-        project_state.last_updated = datetime.now()
+        # Reload state to capture agent updates and phase changes
+        updated_state = await state_manager.load(session_id)
+        
+        # Extract metadata about which agent actually handled the task
+        agent_used = None
+        if response.get("agent_results"):
+            agent_used = response["agent_results"][0].get("agent_id")
 
-        assistant_message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content=result["response"],
-            timestamp=datetime.now()
-        )
-        project_state.conversation_history.append(assistant_message)
-
-        # Persist updated state
-        await default_memory_adapter.save(project_id, project_state.model_dump())
-
-        return ChatResponse(
-            message=result["response"],
-            state={
-                "requirements": result["requirements"].model_dump(),
-                "is_complete": result["is_complete"],
-                "progress": result["progress"]
-            },
-            artifacts={
-                "decisions": result["decisions"],
-                "assumptions": result["assumptions"]
+        return {
+            "message": response.get("message", "Processing complete."),
+            "current_phase": updated_state.current_phase,
+            "agent_used": agent_used,
+            "state_snapshot": {
+                "requirements_progress": updated_state.requirements.progress if updated_state.requirements else 0.0,
+                "has_architecture": bool(updated_state.architecture and updated_state.architecture.tech_stack),
+                "mockup_count": len(updated_state.mockups) if updated_state.mockups else 0
             }
-        )
+        }
         
     except Exception as e:
-        print(f"Error processing message: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing message: {str(e)}") from e
-
-
-@app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
-async def get_requirements(project_id: str):
-    """Get current requirements state for a project."""
-    state_dict = await default_memory_adapter.get(project_id)
-    if not state_dict:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    project_state = ProjectState(**state_dict)
-    return project_state.requirements
-
+        print(f"[main] Error in orchestrator flow: {e}")
+        raise HTTPException(status_code=500, detail=f"Orchestrator Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
-        host=settings.api_host,
-        port=settings.api_port,
-        reload=settings.api_debug,
+        "main:app", 
+        host=settings.api_host, 
+        port=settings.api_port, 
+        reload=settings.api_debug
     )

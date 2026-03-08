@@ -2,17 +2,58 @@
 
 from __future__ import annotations
 
+import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict
 
 from src.state.project_state import Mockup, ProjectState
 from pydantic import BaseModel
 
+class SessionCache(OrderedDict):
+    """Custom LRU Cache with TTL size limits for multi-session caching."""
+    def __init__(self, max_size=100, ttl_seconds=3600):
+        super().__init__()
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self.timestamps = {}
+
+    def __setitem__(self, key, value):
+        self.timestamps[key] = time.time()
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if len(self) > self.max_size:
+            oldest_key = next(iter(self))
+            del self[oldest_key]
+
+    def __getitem__(self, key):
+        if super().__contains__(key):
+            if time.time() - self.timestamps[key] > self.ttl_seconds:
+                del self[key]
+                raise KeyError(key)
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        raise KeyError(key)
+
+    def __contains__(self, key):
+        if super().__contains__(key):
+            if time.time() - self.timestamps[key] > self.ttl_seconds:
+                del self[key]
+                return False
+            return True
+        return False
+
+    def __delitem__(self, key):
+        if key in self.timestamps:
+            del self.timestamps[key]
+        super().__delitem__(key)
+
 
 class StateManager:
     def __init__(self, persistence_adapter: Any):
         self.db = persistence_adapter
-        self.cache: Dict[str, ProjectState] = {}
+        # Upgraded to TTL/Size-limited cache for multi-session support (Step 9)
+        self.cache: Dict[str, ProjectState] = SessionCache(max_size=100, ttl_seconds=3600)
 
     async def load(self, session_id: str) -> ProjectState:
         """Load state from cache or persistence."""
