@@ -141,6 +141,10 @@ class ProjectState(BaseModel):
     agent_interactions: Dict[str, int] = Field(default_factory=dict)
     agent_selection_mode: str = "auto"          # "auto" | "manual"
     selected_agent_id: Optional[str] = None     # set in manual mode
+    awaiting_user_action: bool = False
+    last_completed_agent_id: Optional[str] = None
+    next_recommended_agent_id: Optional[str] = None
+    last_auto_plan_agent_ids: List[str] = Field(default_factory=list)
     export_artifacts: ExportArtifacts = Field(default_factory=ExportArtifacts)
 
     class Config:

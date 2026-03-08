@@ -1,10 +1,10 @@
 """
 Comprehensive end-to-end test for the full orchestrator (Branch 3).
 
-Exercises all Branch 3 features in a realistic multi-turn flow:
+Exercises Branch 3 features in a realistic multi-turn flow:
   - Turn 1: requirements gathering (auto mode)
-  - Turn 2: architecture design → downstream execution_planner planned
-  - Turn 3: change request → re-runs architect + downstream
+  - Turn 2: architecture design checkpoint
+  - Turn 3: explicit continue to execution planner
   - Turn 4: manual mode agent selection
   - Assertions: phase transitions, conversation history, agent_results,
     available_agents, state persistence across turns
@@ -204,12 +204,12 @@ async def test_full_orchestration_multi_turn():
     """
     Simulates a realistic 4-turn project session:
       Turn 1: requirements gathering
-      Turn 2: architecture design (downstream: execution_planner planned)
-      Turn 3: change request (re-runs architect with new stack)
+      Turn 2: architecture design checkpoint
+      Turn 3: explicit continue to execution planner
       Turn 4: manual mode (only requirements_collector)
 
     Verifies: phase transitions, conversation history growth,
-    agent_results shape, available_agents, state persistence.
+    agent_results shape, checkpoint metadata, available_agents, state persistence.
     """
     session_id = "test-full-e2e"
     persistence = InMemoryPersistenceAdapter()
@@ -237,7 +237,7 @@ async def test_full_orchestration_multi_turn():
     req_agent = next(a for a in r1["available_agents"] if a["agent_id"] == "requirements_collector")
     arch_agent = next(a for a in r1["available_agents"] if a["agent_id"] == "project_architect")
     assert req_agent["is_available"] is True
-    assert arch_agent["is_available"] is False
+    assert arch_agent["is_available"] is True
     assert any(ar["agent_id"] == "requirements_collector" for ar in r1["agent_results"])
 
     # Phase: requirements_collector → requirements_complete
@@ -253,8 +253,8 @@ async def test_full_orchestration_multi_turn():
     assert len(s1["conversation_history"]) == 2  # user + assistant
     print(f"    phase={s1['current_phase']}, history={len(s1['conversation_history'])} entries ✓")
 
-    # ── Turn 2: architecture design + downstream ─────────────────────────────
-    print("  [Turn 2] Architecture design (+ downstream execution_planner)...")
+    # ── Turn 2: architecture design checkpoint ───────────────────────────────
+    print("  [Turn 2] Architecture design checkpoint...")
     registry2 = TrackingRegistry({
         "project_architect": fake_arch,
         "execution_planner": fake_exec,
@@ -263,34 +263,36 @@ async def test_full_orchestration_multi_turn():
     orch2 = _make_orch(sm, state2, registry2, _plan("project_architect", "execution_planner"), "architecture_design")
     r2 = await orch2.process_request("Design the architecture", session_id)
 
-    # Both agents should appear in agent_results
     result_ids2 = [ar["agent_id"] for ar in r2["agent_results"]]
-    assert "project_architect" in result_ids2
-    assert "execution_planner" in result_ids2
-    assert result_ids2.index("project_architect") < result_ids2.index("execution_planner")
+    assert result_ids2 == ["project_architect"]
+    assert r2["current_step"]["agent_id"] == "project_architect"
+    assert r2["next_step"]["agent_id"] == "execution_planner"
+    assert r2["awaiting_user_action"] is True
 
     s2 = await persistence.get(session_id)
-    # Phase: project_architect -> execution_planner, so last transition is planning_complete.
-    assert s2["current_phase"] == "planning_complete", f"Expected planning_complete, got {s2['current_phase']}"
+    assert s2["current_phase"] == "architecture_complete", f"Expected architecture_complete, got {s2['current_phase']}"
+    assert s2["awaiting_user_action"] is True
+    assert s2["next_recommended_agent_id"] == "execution_planner"
     assert s2["architecture"]["tech_stack"]["backend"] == "Python/FastAPI"
     assert len(s2["conversation_history"]) == 4  # 2 more entries
     print(f"    phase={s2['current_phase']}, stack={s2['architecture']['tech_stack']}, history={len(s2['conversation_history'])} entries ✓")
 
-    # ── Turn 3: change request (new tech stack) ──────────────────────────────
-    print("  [Turn 3] Change request: switch to Node.js...")
+    # ── Turn 3: explicit continue to execution planner ───────────────────────
+    print("  [Turn 3] Continue to execution planner...")
     registry3 = TrackingRegistry({
-        "project_architect": fake_arch_v2,
         "execution_planner": fake_exec,
     })
     state3 = ProjectState(**await persistence.get(session_id))
     orch3 = _make_orch(sm, state3, registry3, _plan("project_architect", "execution_planner"), "architecture_design")
-    r3 = await orch3.process_request("Change backend to Node.js", session_id)
+    r3 = await orch3.process_request("continue", session_id)
 
     s3 = await persistence.get(session_id)
-    assert s3["architecture"]["tech_stack"]["backend"] == "Node.js/Express", \
-        f"Expected Node.js/Express, got {s3['architecture']['tech_stack']}"
+    assert r3["current_step"]["agent_id"] == "execution_planner"
+    assert r3["awaiting_user_action"] is False
+    assert s3["current_phase"] == "planning_complete"
+    assert s3["last_completed_agent_id"] == "execution_planner"
     assert len(s3["conversation_history"]) == 6  # 2 more entries
-    print(f"    stack updated to {s3['architecture']['tech_stack']}, history={len(s3['conversation_history'])} entries ✓")
+    print(f"    phase advanced to {s3['current_phase']}, history={len(s3['conversation_history'])} entries ✓")
 
     # ── Turn 4: manual mode ──────────────────────────────────────────────────
     print("  [Turn 4] Manual mode: run requirements_collector only...")
@@ -345,8 +347,7 @@ async def test_available_agents_include_readiness_metadata():
         assert "unmet_requires" in a
         assert "is_phase_compatible" in a
     assert availability["requirements_collector"]["is_available"] is True
-    assert availability["project_architect"]["is_available"] is False
-    assert "requirements" in availability["project_architect"]["unmet_requires"]
+    assert availability["project_architect"]["is_available"] is True
     print(f"  PASS: available_agents exposes readiness metadata for all {len(store_ids)} agents")
 
 
@@ -388,22 +389,21 @@ async def test_conversation_history_roles_always_alternate():
 
 @pytest.mark.asyncio
 async def test_agent_results_skipped_for_unimplemented_agents():
-    """Unimplemented agents (registry returns None) appear as 'skipped_unavailable' in agent_results."""
+    """When the first auto-mode task is unavailable, it appears as skipped_unavailable in agent_results."""
     session_id = "test-full-skip"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
     seed = ProjectState(session_id=session_id, current_phase="initialization")
     await persistence.save(session_id, seed.model_dump())
 
-    # Registry returns None for execution_planner (not yet implemented)
-    registry = TrackingRegistry({"project_architect": FakeArchitectAgent()})
+    registry = TrackingRegistry({})
     orch = _make_orch(sm, seed, registry, _plan("project_architect", "execution_planner"))
     r = await orch.process_request("Design and plan", session_id)
 
     skipped = [ar for ar in r["agent_results"] if ar["status"] == "skipped_unavailable"]
-    assert any(ar["agent_id"] == "execution_planner" for ar in skipped), \
-        "execution_planner should be 'skipped_unavailable' when registry returns None"
-    print(f"  PASS: unimplemented agents appear as 'skipped_unavailable' in agent_results")
+    assert any(ar["agent_id"] == "project_architect" for ar in skipped), \
+        "project_architect should be 'skipped_unavailable' when the first task is unavailable"
+    print("  PASS: unavailable first task appears as skipped_unavailable")
 
 
 @pytest.mark.asyncio
@@ -412,29 +412,32 @@ async def test_export_artifacts_persist_when_exporter_runs():
     session_id = "test-full-export"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
-    seed = ProjectState(session_id=session_id, current_phase="planning_complete", requirements=Requirements())
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="planning_complete",
+        requirements=Requirements(),
+        architecture=ArchitectureDefinition(tech_stack={"frontend": "React"}),
+    )
     await persistence.save(session_id, seed.model_dump())
 
     registry = TrackingRegistry(
         {
-            "mockup_agent": FakeMockupAgent(),
             "exporter": FakeExporterAgent(),
         }
     )
-    orch = _make_orch(sm, seed, registry, _plan("mockup_agent", "exporter"), "export")
-    response = await orch.process_request("Create a mockup and export it", session_id)
+    orch = _make_orch(sm, seed, registry, _plan("exporter"), "export")
+    response = await orch.process_request("Export to PDF", session_id)
 
     persisted = await persistence.get(session_id)
     assert response["state_snapshot"]["export_artifacts"]["saved_path"] == "outputs/full-test-export.pdf"
     assert persisted["export_artifacts"]["generated_formats"] == ["markdown", "pdf"]
     assert persisted["export_artifacts"]["history"][0]["saved_path"] == "outputs/full-test-export.pdf"
-    assert len(persisted["mockups"]) == 1
-    print("  PASS: export artifacts persist with saved_path, formats, history, and mockups")
+    print("  PASS: export artifacts persist with saved_path, formats, and history")
 
 
 @pytest.mark.asyncio
 async def test_failure_message_surfaces_issue_summary():
-    """User-facing response should surface structured failure summaries when agents fail."""
+    """User-facing response should surface structured failure summaries when the executed auto task fails."""
     session_id = "test-full-issues"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
@@ -456,7 +459,6 @@ async def test_failure_message_surfaces_issue_summary():
 
     assert "Issues:" in response["message"]
     assert "project_architect: failed_runtime" in response["message"]
-    assert "execution_planner: blocked_dependency" in response["message"]
     print("  PASS: failure summary stays visible in the user-facing orchestrator message")
 
 

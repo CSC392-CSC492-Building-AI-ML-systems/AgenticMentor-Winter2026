@@ -164,16 +164,16 @@ class IntentClassifier:
         conversation_history: list[dict] | None = None,
     ) -> IntentResult:
         """Rule-based classification using INTENT_PATTERNS, phase, and optional conversation context."""
-        text = _conversation_context_for_rules(conversation_history, user_input)
-        if not text or not (user_input or "").strip():
+        current_text = (user_input or "").lower().strip()
+        history_text = _conversation_context_for_rules(conversation_history, "")
+        if not current_text:
             return IntentResult(
                 primary_intent="unknown",
                 requires_agents=[],
                 confidence=0.0,
             )
 
-        best_intent: str | None = None
-        best_score = 0
+        scored_intents: list[tuple[str, int, int]] = []
 
         for intent_name, pattern in INTENT_PATTERNS.items():
             phases = pattern.get("phase_compatibility") or []
@@ -181,10 +181,20 @@ class IntentClassifier:
                 continue
             keywords = pattern.get("keywords") or []
             triggers = pattern.get("triggers") or []
-            score = sum(1 for k in keywords + triggers if k in text)
+            score_current = sum(1 for k in keywords + triggers if k in current_text)
+            score_history = sum(1 for k in keywords + triggers if k in history_text)
+            scored_intents.append((intent_name, score_current, score_history))
+
+        any_current_match = any(score_current > 0 for _, score_current, _ in scored_intents)
+        best_intent: str | None = None
+        best_score = 0
+        best_current_score = 0
+        for intent_name, score_current, score_history in scored_intents:
+            score = score_current if any_current_match else score_history
             if score > best_score:
                 best_score = score
                 best_intent = intent_name
+                best_current_score = score_current
 
         if best_intent is None:
             return IntentResult(
@@ -194,7 +204,7 @@ class IntentClassifier:
             )
 
         agents = INTENT_TO_AGENTS.get(best_intent, [])
-        confidence = min(1.0, 0.3 + 0.2 * best_score)
+        confidence = min(1.0, 0.3 + 0.2 * (best_current_score if best_current_score > 0 else best_score))
         return IntentResult(
             primary_intent=best_intent,
             requires_agents=list(agents),

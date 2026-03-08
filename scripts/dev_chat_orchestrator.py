@@ -68,6 +68,17 @@ async def main() -> None:
         response = await orchestrator.process_request(user_input, session_id)
         message = response.get("message") or ""
         print(f"Bot: {message}\n")
+        current_step = response.get("current_step")
+        next_step = response.get("next_step")
+        if current_step:
+            print("Current step:")
+            print(f"  - agent: {current_step.get('agent_id')}")
+            print(f"  - status: {current_step.get('status')}")
+            print(f"  - phase_after: {current_step.get('phase_after')}")
+            print(f"  - awaiting_user_action: {response.get('awaiting_user_action')}")
+            if next_step:
+                print(f"  - next_step: {next_step.get('agent_id')}")
+            print()
         agent_results = response.get("agent_results") or []
         if agent_results:
             print("Agent results:")
