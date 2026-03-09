@@ -36,7 +36,8 @@ AGENT_STORE: list[dict[str, Any]] = [
         "expensive": True,
         "requires": ["architecture"],
         "produces": ["roadmap"],
-        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete"],
+        # Allow execution planner to be used again after design, as long as architecture exists.
+        "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete", "design_complete"],
     },
     {
         "id": "mockup_agent",

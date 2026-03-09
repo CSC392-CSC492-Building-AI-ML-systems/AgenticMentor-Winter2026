@@ -215,7 +215,8 @@ class RequirementsAgent(BaseAgent):
                 content = content.split("```")[1].split("```")[0]
             
             updated_reqs = json.loads(content.strip())
-            current_dict = state["requirements"].model_dump()
+            prev_reqs = state["requirements"]
+            current_dict = prev_reqs.model_dump()
             
             # List fields: replace when LLM returns a new list so corrections (e.g. "no user authentication") take effect
             list_keys = {"key_features", "technical_constraints", "business_goals", "target_users"}
@@ -236,17 +237,37 @@ class RequirementsAgent(BaseAgent):
                     merged_count += 1
             
             reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
+            msg_lower = (last_user_message or "").lower()
             # Only set pending_confirmation when user asked to fill in AND we're not already past confirmation
             # (avoids asking for confirmation again after user already confirmed or made a change)
-            progress_before = getattr(state["requirements"], "progress", 0.0)
+            progress_before = getattr(prev_reqs, "progress", 0.0)
             fill_phrases = ("fill in", "pick everything", "pick for me", "you decide", "use defaults", "just pick", "fill in all")
-            msg_lower = (last_user_message or "").lower()
             if (
                 any(p in msg_lower for p in fill_phrases)
                 and merged_count >= 4
                 and not getattr(reqs, "pending_confirmation", False)
                 and progress_before < 0.85
             ):
+                current_dict["pending_confirmation"] = True
+                reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
+            # If requirements were previously complete and the user is asking to change/add/remove things,
+            # treat this as re-opening requirements until they confirm again.
+            change_phrases = (
+                "add more",
+                "add another",
+                "add feature",
+                "more features",
+                "change",
+                "update",
+                "edit",
+                "remove",
+                "delete",
+                "tweak",
+            )
+            if any(p in msg_lower for p in change_phrases) and (
+                getattr(prev_reqs, "is_complete", False) or getattr(prev_reqs, "progress", 0.0) >= 0.85
+            ):
+                current_dict["is_complete"] = False
                 current_dict["pending_confirmation"] = True
                 reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
             state["requirements"] = reqs

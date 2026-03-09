@@ -34,6 +34,7 @@ _ensure_project_root_on_path()
 from src.storage.memory_store import InMemoryPersistenceAdapter
 from src.state.state_manager import StateManager
 from src.orchestrator.master_agent import MasterOrchestrator
+from src.orchestrator.agent_store import AGENT_STORE
 
 
 async def main() -> None:
@@ -50,7 +51,10 @@ async def main() -> None:
     else:
         print("Intent: rule-based. Set USE_LLM_INTENT=1 for LLM intent.")
     print("Set GEMINI_API_KEY in .env for architect/mockup/requirements LLM.")
-    print("Type 'exit' or 'quit' to end.\n")
+    print("Type 'exit' or 'quit' to end.")
+    print("Type '/manual' to pick a single agent to run for the next message.\n")
+
+    manual_agent_id: str | None = None
 
     while True:
         try:
@@ -64,28 +68,51 @@ async def main() -> None:
         if user_input.lower() in {"exit", "quit"}:
             print("Goodbye.")
             break
+        if user_input.startswith("/manual"):
+            # Enter manual mode selection for the next turn.
+            # Use current state to show only agents that are ready.
+            project_state = await state_manager.load(session_id)
+            available = orchestrator._get_available_agents(project_state)  # type: ignore[attr-defined]
+            ready_agents = [a for a in available if a.get("is_available")]
+            print("Manual mode: agents (ready now marked with '*'):")
+            for entry in available:
+                marker = "*" if entry.get("is_available") else " "
+                print(f"  {marker} {entry['agent_id']}: {entry.get('agent_name', '')}")
+            chosen = input("Enter agent_id to run (or leave blank to cancel): ").strip()
+            if not chosen:
+                manual_agent_id = None
+                print("Manual mode cancelled; continuing in auto mode.\n")
+            else:
+                ids = {a["agent_id"] for a in available}
+                if chosen not in ids:
+                    print(f"Unknown agent_id '{chosen}'. Staying in auto mode.\n")
+                    manual_agent_id = None
+                else:
+                    manual_agent_id = chosen
+                    print(f"Next message will run in manual mode with '{manual_agent_id}'.\n")
+            continue
 
-        response = await orchestrator.process_request(user_input, session_id)
+        if manual_agent_id:
+            response = await orchestrator.process_request(
+                user_input,
+                session_id,
+                agent_selection_mode="manual",
+                selected_agent_id=manual_agent_id,
+            )
+            # Manual mode is one-shot; reset to auto afterwards.
+            manual_agent_id = None
+        else:
+            response = await orchestrator.process_request(user_input, session_id)
         message = response.get("message") or ""
         print(f"Bot: {message}\n")
-        current_step = response.get("current_step")
-        next_step = response.get("next_step")
-        if current_step:
-            print("Current step:")
-            print(f"  - agent: {current_step.get('agent_id')}")
-            print(f"  - status: {current_step.get('status')}")
-            print(f"  - phase_after: {current_step.get('phase_after')}")
-            print(f"  - awaiting_user_action: {response.get('awaiting_user_action')}")
-            if next_step:
-                print(f"  - next_step: {next_step.get('agent_id')}")
-            print()
-        agent_results = response.get("agent_results") or []
-        if agent_results:
-            print("Agent results:")
-            for item in agent_results:
-                detail = item.get("error") or item.get("blocked_by")
-                suffix = f" ({detail})" if detail else ""
-                print(f"  - {item.get('agent_id')}: {item.get('status')}{suffix}")
+        # If the orchestrator returned availability info (e.g. manual-mode rejection),
+        # surface currently available agents as a hint.
+        available_agents = response.get("available_agents") or []
+        ready = [a for a in available_agents if a.get("is_available")]
+        if ready:
+            print("Available agents now:")
+            for a in ready:
+                print(f"  - {a['agent_id']}: {a.get('agent_name', '')}")
             print()
 
 

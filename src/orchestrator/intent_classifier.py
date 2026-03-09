@@ -18,7 +18,7 @@ INTENT_PATTERNS = {
         "triggers": ["diagram", "structure", "how does"]
     },
     "mockup_creation": {
-        "keywords": ["ui", "screen", "flow", "wireframe", "design"],
+        "keywords": ["ui", "screen", "flow", "wireframe", "design", "mockup", "mockups", "prototype"],
         "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete", "design_complete"],
         "triggers": ["looks like", "user journey"]
     },
