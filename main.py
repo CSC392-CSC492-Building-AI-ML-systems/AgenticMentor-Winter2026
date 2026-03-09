@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uuid
@@ -13,10 +13,21 @@ from src.protocols.schemas import (
     RequirementsState,
     ChatMessage,
     MessageRole,
+    FirebaseUser,
+    EmailPasswordSignUpRequest,
+    EmailPasswordLoginRequest,
+    TokenVerificationRequest,
+    TokenResponse,
 )
 from src.utils.config import settings
 from src.agents.requirements_collector import get_agent
 from src.storage.memory_store import default_memory_adapter
+from src.auth.firebase_auth import (
+    get_current_user,
+    signup_with_email_password,
+    login_with_email_password,
+    verify_id_token_payload,
+)
 
 
 projects_store: dict[str, ProjectState] = {}
@@ -56,8 +67,45 @@ async def health_check():
     }
 
 
+@app.post("/auth/signup/email", response_model=TokenResponse, status_code=201)
+async def auth_signup_email(request: EmailPasswordSignUpRequest) -> TokenResponse:
+    """Sign up a new user with email/password using Firebase."""
+    data = await signup_with_email_password(email=request.email, password=request.password)
+
+    return TokenResponse(
+        id_token=data.get("idToken"),
+        refresh_token=data.get("refreshToken"),
+        expires_in=int(data.get("expiresIn")) if data.get("expiresIn") is not None else None,
+        user_id=data.get("localId"),
+        email=data.get("email"),
+    )
+
+
+@app.post("/auth/login/email", response_model=TokenResponse)
+async def auth_login_email(request: EmailPasswordLoginRequest) -> TokenResponse:
+    """Log in an existing user with email/password using Firebase."""
+    data = await login_with_email_password(email=request.email, password=request.password)
+
+    return TokenResponse(
+        id_token=data.get("idToken"),
+        refresh_token=data.get("refreshToken"),
+        expires_in=int(data.get("expiresIn")) if data.get("expiresIn") is not None else None,
+        user_id=data.get("localId"),
+        email=data.get("email"),
+    )
+
+
+@app.post("/auth/verify-token", response_model=FirebaseUser)
+async def auth_verify_token(request: TokenVerificationRequest) -> FirebaseUser:
+    """Verify a Firebase ID token issued by any provider (email/password, Google, GitHub, etc.)."""
+    return await verify_id_token_payload(request.id_token)
+
+
 @app.post("/projects", response_model=ProjectResponse, status_code=201)
-async def create_project(project: ProjectCreate):
+async def create_project(
+    project: ProjectCreate,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
     """Create a new project and return project_id."""
     project_id = str(uuid.uuid4())
     
@@ -87,7 +135,10 @@ async def create_project(project: ProjectCreate):
 
 
 @app.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str):
+async def get_project(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
     """Get project state by ID."""
     state_dict = await default_memory_adapter.get(project_id)
     if not state_dict:
@@ -106,7 +157,11 @@ async def get_project(project_id: str):
 
 
 @app.post("/projects/{project_id}/chat", response_model=ChatResponse)
-async def chat(project_id: str, request: ChatRequest):
+async def chat(
+    project_id: str,
+    request: ChatRequest,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
     """Send a message and get agent response."""
     state_dict = await default_memory_adapter.get(project_id)
     if not state_dict:
@@ -163,7 +218,10 @@ async def chat(project_id: str, request: ChatRequest):
 
 
 @app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
-async def get_requirements(project_id: str):
+async def get_requirements(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
     """Get current requirements state for a project."""
     state_dict = await default_memory_adapter.get(project_id)
     if not state_dict:

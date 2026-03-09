@@ -6,6 +6,7 @@ import RequirementPanel from "@/components/panels/RequirementPanel";
 import ArchitecturePanel from "@/components/panels/ArchitecturePanel";
 import WireframePanel from "@/components/panels/WireframePanel";
 import ExecutionPanel from "@/components/panels/ExecutionPanel";
+import RequireAuth from "@/components/auth/RequireAuth";
 
 export default function ProjectPage() {
   const [activeTab, setActiveTab] = useState("req");
@@ -18,6 +19,7 @@ export default function ProjectPage() {
   ];
 
   return (
+    <RequireAuth>
     <div className="flex flex-col h-screen w-full bg-white dark:bg-black font-mono selection:bg-gray-300 dark:selection:bg-gray-200 selection:text-black transition-colors">
       <TopNav />
       
@@ -52,5 +54,6 @@ export default function ProjectPage() {
 
       <ConsoleWindow />
     </div>
+    </RequireAuth>
   );
 }

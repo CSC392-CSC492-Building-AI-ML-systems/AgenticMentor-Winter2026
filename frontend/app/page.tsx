@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { Terminal, ShieldAlert, ChevronRight } from "lucide-react";
+import { Terminal } from "lucide-react";
 import ThemeToggle from "@/components/layout/ThemeToggle";
+import AuthLink from "@/components/auth/AuthLink";
 
 export default function LandingPage() {
   return (
@@ -46,31 +47,7 @@ export default function LandingPage() {
 
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
-          
-          {/* Button 1: Authenticate */}
-          <Link
-            href="/login"
-            className="flex-1 sm:max-w-[220px] border border-gray-300 dark:border-[#555] bg-gray-50 dark:bg-[#050505] hover:border-black dark:hover:border-white transition-all p-4 flex flex-col items-start group relative"
-          >
-            {/* Corner Accents - Invert color on theme swap */}
-            <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-black dark:border-white opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-black dark:border-white opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            
-            <ShieldAlert size={14} className="text-gray-500 dark:text-gray-200 mb-3 group-hover:text-black dark:group-hover:text-white transition-colors" />
-            <span className="text-[10px] text-gray-500 dark:text-gray-200 tracking-widest uppercase mb-1 font-bold transition-colors">Req_Access</span>
-            <span className="text-sm font-bold text-black dark:text-white uppercase tracking-widest transition-colors">Authenticate</span>
-          </Link>
-
-          {/* Button 2: Dashboard Bypass */}
-          <Link
-            href="/dashboard"
-            className="flex-1 sm:max-w-[220px] border border-black dark:border-white bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 transition-all p-4 flex flex-col items-start group"
-          >
-            <ChevronRight size={14} className="text-white dark:text-black mb-3 group-hover:translate-x-1 transition-transform" />
-            <span className="text-[10px] text-gray-400 dark:text-gray-700 tracking-widest uppercase mb-1 font-bold transition-colors">System_Bypass</span>
-            <span className="text-sm font-bold uppercase tracking-widest text-white dark:text-black transition-colors">Init_Dashboard</span>
-          </Link>
-
+          <AuthLink />
         </div>
       </div>
 

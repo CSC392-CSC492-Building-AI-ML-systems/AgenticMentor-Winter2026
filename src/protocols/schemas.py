@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from enum import Enum
 from typing import Literal
 
@@ -121,4 +121,39 @@ class ChatResponse(BaseModel):
                 }
             }
         }
-    
+
+
+class FirebaseUser(BaseModel):
+    """Representation of an authenticated Firebase user."""
+    uid: str
+    email: Optional[EmailStr] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    provider_id: Optional[str] = None
+    claims: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EmailPasswordSignUpRequest(BaseModel):
+    """Request body for signing up with email/password."""
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class EmailPasswordLoginRequest(BaseModel):
+    """Request body for logging in with email/password."""
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class TokenVerificationRequest(BaseModel):
+    """Request body for verifying an existing Firebase ID token."""
+    id_token: str = Field(min_length=10)
+
+
+class TokenResponse(BaseModel):
+    """Standardised response for authentication tokens returned by Firebase REST API."""
+    id_token: str
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
+    user_id: Optional[str] = None
+    email: Optional[EmailStr] = None

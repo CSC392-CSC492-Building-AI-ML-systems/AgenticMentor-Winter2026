@@ -1,10 +1,13 @@
+"use client";
 import TopNav from "@/components/layout/TopNav";
 import ProjectNode from "@/components/dashboard/ProjectNode";
 import Link from "next/link";
 import { Terminal, Plus, Search } from "lucide-react";
+import RequireAuth from "@/components/auth/RequireAuth";
 
 export default function DashboardPage() {
   return (
+    <RequireAuth>
     <div className="flex flex-col h-screen w-full bg-white dark:bg-black overflow-hidden font-mono selection:bg-gray-300 dark:selection:bg-gray-200 selection:text-black transition-colors">
       <TopNav />
 
@@ -78,5 +81,6 @@ export default function DashboardPage() {
         </div>
       </main>
     </div>
+    </RequireAuth>
   );
 }
