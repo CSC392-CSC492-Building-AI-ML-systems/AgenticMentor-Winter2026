@@ -9,6 +9,9 @@ requirements_collector, project_architect, execution_planner, mockup_agent, expo
 State is in-memory (no DB). Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env so
 all agents can run; otherwise agents that need the key will be skipped.
 
+The CLI intentionally prints only the raw orchestrator message so the terminal
+transcript matches what the frontend user would see.
+
 Optional env:
   USE_LLM_INTENT=1  → use LLM for intent classification (default: rule-based).
 """
@@ -40,53 +43,25 @@ async def main() -> None:
     persistence = InMemoryPersistenceAdapter()
     state_manager = StateManager(persistence)
 
-    use_llm = os.environ.get("USE_LLM_INTENT", "").strip() in ("1", "true", "yes")
-    orchestrator = MasterOrchestrator(state_manager, use_llm=use_llm)
+    #use_llm = os.environ.get("USE_LLM_INTENT", "").strip() in ("1", "true", "yes")
+    orchestrator = MasterOrchestrator(state_manager, use_llm=True)
     session_id = "dev-cli-session"
-
-    print("Dev chat with MasterOrchestrator (real sub-agents, in-memory state)")
-    if use_llm:
-        print("Intent: LLM-based (USE_LLM_INTENT=1)")
-    else:
-        print("Intent: rule-based. Set USE_LLM_INTENT=1 for LLM intent.")
-    print("Set GEMINI_API_KEY in .env for architect/mockup/requirements LLM.")
-    print("Type 'exit' or 'quit' to end.\n")
 
     while True:
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
+            print()
             break
 
         if not user_input:
             continue
         if user_input.lower() in {"exit", "quit"}:
-            print("Goodbye.")
             break
 
         response = await orchestrator.process_request(user_input, session_id)
         message = response.get("message") or ""
-        print(f"Bot: {message}\n")
-        current_step = response.get("current_step")
-        next_step = response.get("next_step")
-        if current_step:
-            print("Current step:")
-            print(f"  - agent: {current_step.get('agent_id')}")
-            print(f"  - status: {current_step.get('status')}")
-            print(f"  - phase_after: {current_step.get('phase_after')}")
-            print(f"  - awaiting_user_action: {response.get('awaiting_user_action')}")
-            if next_step:
-                print(f"  - next_step: {next_step.get('agent_id')}")
-            print()
-        agent_results = response.get("agent_results") or []
-        if agent_results:
-            print("Agent results:")
-            for item in agent_results:
-                detail = item.get("error") or item.get("blocked_by")
-                suffix = f" ({detail})" if detail else ""
-                print(f"  - {item.get('agent_id')}: {item.get('status')}{suffix}")
-            print()
+        print(f"{message}\n")
 
 
 if __name__ == "__main__":
