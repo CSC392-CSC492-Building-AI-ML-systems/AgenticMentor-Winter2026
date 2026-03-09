@@ -1,4 +1,33 @@
 #!/usr/bin/env python3
+"""
+This script serves as the final "Live Fire" validation for the AgenticMentor.
+
+PURPOSE:
+Unlike structural tests, this script simulates a real human interaction 
+across 6 distinct turns. It exercises the MasterOrchestrator's ability to 
+hand off state between different agents while ensuring every message and 
+resulting artifact is successfully persisted to Supabase.
+
+WHAT IT TESTS:
+1. Multi-Turn History: Verifies that conversation logs are correctly 
+   appended to the database without overwriting previous turns.
+2. Full Agent Lifecycle: Forces execution of all 5 core agents 
+   (Collector -> Architect -> Planner -> Mockup -> Exporter).
+3. StateManager Integration: Validates that the Orchestrator and 
+   StateManager are correctly loading/saving the "Baton" (ProjectState) 
+   between agent calls.
+4. Final Integrity: Bypasses the local cache at the end to confirm 
+   that the "Truth" exists physically in the Supabase tables.
+
+USAGE:
+    python tests/db/test_e2e_full_flow.py
+
+PREREQUISITES:
+    - Active Gemini API Key (requires LLM to generate real responses).
+    - Valid .env with SUPABASE_URL and SUPABASE_KEY.
+"""
+
+
 import asyncio
 import sys
 import os
