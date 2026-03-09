@@ -1,11 +1,19 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
-import { Terminal, Settings, User, Download, FileText, Github, FileDown, Sun, Moon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Terminal, Settings, User, Download, FileText, Github, FileDown, Sun, Moon, LogOut } from "lucide-react";
+import { useAuthStore } from "@/store/useAuthStore";
+import { getFirebaseAuth } from "@/lib/firebase";
 
 export default function TopNav() {
   const [showExport, setShowExport] = useState(false);
   const [isDark, setIsDark] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const { user, idToken, clearAuth } = useAuthStore();
 
   // Theme Toggle Logic
   useEffect(() => {
@@ -20,14 +28,23 @@ export default function TopNav() {
     setIsDark(!isDark);
   };
 
-  // Click outside logic for the Exporter dropdown
+  // Click outside logic for dropdowns
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (exportRef.current && !exportRef.current.contains(event.target as Node)) setShowExport(false);
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) setShowUserMenu(false);
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  const handleLogout = () => {
+    const auth = getFirebaseAuth();
+    if (auth) auth.signOut();
+    clearAuth();
+    setShowUserMenu(false);
+    router.replace("/");
+  };
 
   return (
     <div className="h-12 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 sm:px-6 bg-gray-50 dark:bg-black flex-shrink-0 transition-colors">
@@ -97,8 +114,33 @@ export default function TopNav() {
         <button className="text-gray-500 hover:text-black dark:text-gray-200 dark:hover:text-white transition-colors">
           <Settings size={14} />
         </button>
-        <div className="w-6 h-6 bg-gray-200 dark:bg-[#111] flex items-center justify-center border border-gray-300 dark:border-[#555] cursor-pointer hover:border-black dark:hover:border-white transition-colors">
-          <User size={14} className="text-black dark:text-white" />
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setShowUserMenu(!showUserMenu)}
+            className="w-6 h-6 bg-gray-200 dark:bg-[#111] flex items-center justify-center border border-gray-300 dark:border-[#555] cursor-pointer hover:border-black dark:hover:border-white transition-colors"
+            title={idToken && user?.email ? user.email : "User"}
+          >
+            <User size={14} className="text-black dark:text-white" />
+          </button>
+          {showUserMenu && (
+            <div className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-black border border-gray-300 dark:border-[#555] shadow-xl z-50 py-1 transition-colors">
+              {user?.email && (
+                <div className="px-3 py-2 text-[10px] text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-[#444] truncate">
+                  {user.email}
+                </div>
+              )}
+              <Link href="/" className="block w-full text-left px-3 py-2 text-[10px] font-bold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white hover:text-black transition-colors uppercase tracking-widest">
+                Home
+              </Link>
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-[#111] transition-colors uppercase tracking-widest"
+              >
+                <LogOut size={12} />
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
