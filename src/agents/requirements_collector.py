@@ -68,13 +68,13 @@ class RequirementsAgent(BaseAgent):
             review_config=review_config
         )
         
-        print("Initializing Requirements Agent...")
+        # print("Initializing Requirements Agent...")
         self.graph = self._build_graph()
-        print("Agent ready")
+        # print("Agent ready")
     
     def _build_graph(self) -> StateGraph:
         """Build the complete LangGraph workflow."""
-        print("Building workflow graph...")
+        # print("Building workflow graph...")
         
         workflow = StateGraph(AgentState)
         
@@ -97,7 +97,7 @@ class RequirementsAgent(BaseAgent):
         )
         workflow.add_edge("generate_question", END)
         
-        print("Graph built successfully")
+        # print("Graph built successfully")
         return workflow.compile()
     
     async def _generate(self, input: Any, context: dict, tools: list) -> Any:
@@ -156,15 +156,15 @@ class RequirementsAgent(BaseAgent):
     
     async def _analyze_node(self, state: AgentState) -> AgentState:
         """Node 1: Analyze current state and conversation history."""
-        print("STEP 1")
-        print("[ANALYZE] Analyzing conversation context...")
+        # print("STEP 1")
+        # print("[ANALYZE] Analyzing conversation context...")
         
         conv_history = format_conversation_history(
             [{"role": m.type, "content": m.content} for m in state["messages"]]
         )
         
         if len(state["messages"]) <= 1:
-            print("First message, skipping deep analysis")
+            # print("First message, skipping deep analysis")
             return state
         
         analysis_prompt = ANALYSIS_PROMPT.format(
@@ -178,22 +178,22 @@ class RequirementsAgent(BaseAgent):
         ]
         
         response = await self.llm.ainvoke(messages)
-        print(f"Analysis: {response.content[:150]}...")
+        # print(f"Analysis: {response.content[:150]}...")
         
         return state
     
     async def _update_requirements_node(self, state: AgentState) -> AgentState:
         """Node 2: Update requirements state based on user's latest response."""
-        print("STEP 2")
-        print("[UPDATE] Extracting and merging new requirements...")
+        # print("STEP 2")
+        # print("[UPDATE] Extracting and merging new requirements...")
         
         user_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
         if not user_messages:
-            print("No user message to process")
+            # print("No user message to process")
             return state
         
         last_user_message = user_messages[-1].content
-        print(f"Processing: '{last_user_message[:80]}...'")
+        # print(f"Processing: '{last_user_message[:80]}...'")
         
         update_prompt = UPDATE_PROMPT.format(
             requirements_json=state["requirements"].model_dump_json(indent=2),
@@ -271,17 +271,18 @@ class RequirementsAgent(BaseAgent):
                 current_dict["pending_confirmation"] = True
                 reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
             state["requirements"] = reqs
-            print(f"Merged {merged_count} requirement updates")
+            # print(f"Merged {merged_count} requirement updates")
             
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"Failed to parse/merge requirements: {e}")
-        
+            # print(f"Failed to parse/merge requirements: {e}")
+            pass
+
         return state
     
     async def _check_completion_node(self, state: AgentState) -> AgentState:
         """Node 3: Check if requirements are sufficiently complete."""
-        print("STEP 3")
-        print("[CHECK] Evaluating requirements completeness...")
+        # print("STEP 3")
+        # print("[CHECK] Evaluating requirements completeness...")
         
         completion_prompt = COMPLETION_CHECK_PROMPT.format(
             requirements_json=state["requirements"].model_dump_json(indent=2)
@@ -312,11 +313,11 @@ class RequirementsAgent(BaseAgent):
             
             state["requirements"] = RequirementsState(**current_dict)
             
-            print(f"Progress: {state['requirements'].progress:.0%}")
-            print(f"Complete: {state['requirements'].is_complete}")
+            # print(f"Progress: {state['requirements'].progress:.0%}")
+            # print(f"Complete: {state['requirements'].is_complete}")
             
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"Failed to parse completion check: {e}")
+            # print(f"Failed to parse completion check: {e}")
             current_dict = state["requirements"].model_dump()
             current_dict["is_complete"] = False
             current_dict["progress"] = min(0.8, current_dict.get("progress", 0.0) + 0.1)
@@ -326,8 +327,8 @@ class RequirementsAgent(BaseAgent):
     
     async def _generate_question_node(self, state: AgentState) -> AgentState:
         """Node 4: Generate the next question to ask the user (or ask for confirmation when we filled defaults)."""
-        print("STEP 4")
-        print("[QUESTION] Generating next question...")
+        # print("STEP 4")
+        # print("[QUESTION] Generating next question...")
         
         reqs = state["requirements"]
         pending = getattr(reqs, "pending_confirmation", False)
@@ -376,7 +377,7 @@ Return ONLY the question text, nothing else."""
             state["next_question"] = question
             state["messages"].append(AIMessage(content=question))
         
-        print(f"Question: '{state['next_question'][:200]}...'")
+        # print(f"Question: '{state['next_question'][:200]}...'")
         return state
     
     def _should_continue(self, state: AgentState) -> str:
@@ -384,13 +385,13 @@ Return ONLY the question text, nothing else."""
         reqs = state["requirements"]
         # When we filled defaults, ask for confirmation before marking complete
         if getattr(reqs, "pending_confirmation", False):
-            print("Pending confirmation—asking user to confirm filled-in details")
+            # print("Pending confirmation—asking user to confirm filled-in details")
             return "continue"
         if reqs.is_complete or reqs.progress >= 0.85:
-            print("Requirements gathering complete")
+            # print("Requirements gathering complete")
             return "complete"
         
-        print(f"Continuing (progress: {reqs.progress:.0%})")
+        # print(f"Continuing (progress: {reqs.progress:.0%})")
         return "continue"
     
     async def process_message(
@@ -403,7 +404,7 @@ Return ONLY the question text, nothing else."""
         Process a user message and return the agent's response.
         This method maintains backward compatibility with existing code.
         """
-        print(f"Processing message: '{user_message[:50]}...'")
+        # print(f"Processing message: '{user_message[:50]}...'")
         
         context = {
             "requirements": current_requirements,
@@ -416,7 +417,7 @@ Return ONLY the question text, nothing else."""
             result = await self._generate(input_data, context, [])
             return result
         except Exception as e:
-            print(f"Error in graph execution: {e}")
+            # print(f"Error in graph execution: {e}")
             raise
 
 

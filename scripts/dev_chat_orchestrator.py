@@ -9,6 +9,9 @@ requirements_collector, project_architect, execution_planner, mockup_agent, expo
 State is in-memory (no DB). Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env so
 all agents can run; otherwise agents that need the key will be skipped.
 
+The CLI intentionally prints only the raw orchestrator message so the terminal
+transcript matches what the frontend user would see.
+
 Optional env:
   USE_LLM_INTENT=1  → use LLM for intent classification (default: rule-based).
 """
@@ -41,32 +44,21 @@ async def main() -> None:
     persistence = InMemoryPersistenceAdapter()
     state_manager = StateManager(persistence)
 
-    use_llm = os.environ.get("USE_LLM_INTENT", "").strip() in ("1", "true", "yes")
-    orchestrator = MasterOrchestrator(state_manager, use_llm=use_llm)
+    #use_llm = os.environ.get("USE_LLM_INTENT", "").strip() in ("1", "true", "yes")
+    orchestrator = MasterOrchestrator(state_manager, use_llm=True)
     session_id = "dev-cli-session"
 
-    print("Dev chat with MasterOrchestrator (real sub-agents, in-memory state)")
-    if use_llm:
-        print("Intent: LLM-based (USE_LLM_INTENT=1)")
-    else:
-        print("Intent: rule-based. Set USE_LLM_INTENT=1 for LLM intent.")
-    print("Set GEMINI_API_KEY in .env for architect/mockup/requirements LLM.")
-    print("Type 'exit' or 'quit' to end.")
-    print("Type '/manual' to pick a single agent to run for the next message.\n")
-
     manual_agent_id: str | None = None
-
     while True:
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
+            print()
             break
 
         if not user_input:
             continue
         if user_input.lower() in {"exit", "quit"}:
-            print("Goodbye.")
             break
         if user_input.startswith("/manual"):
             # Enter manual mode selection for the next turn.
@@ -104,9 +96,7 @@ async def main() -> None:
         else:
             response = await orchestrator.process_request(user_input, session_id)
         message = response.get("message") or ""
-        print(f"Bot: {message}\n")
-        # If the orchestrator returned availability info (e.g. manual-mode rejection),
-        # surface currently available agents as a hint.
+        print(f"{message}\n")
         available_agents = response.get("available_agents") or []
         ready = [a for a in available_agents if a.get("is_available")]
         if ready:
