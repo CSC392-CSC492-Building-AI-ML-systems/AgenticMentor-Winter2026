@@ -210,6 +210,36 @@ class MasterOrchestrator:
         plan = graph_result.get("plan")
         project_state = graph_result.get("project_state")
         intent = graph_result.get("intent")
+        # General inquiry (unknown intent): answer from context, no agent run.
+        if (
+            agent_selection_mode == "auto"
+            and intent
+            and (intent.get("primary_intent") or "").strip() == "unknown"
+            and project_state is not None
+        ):
+            message = await self._general_inquiry_message(project_state, user_input or "")
+            new_history = list(getattr(project_state, "conversation_history", None) or [])
+            new_history.append({"role": "user", "content": user_input or ""})
+            new_history.append({"role": "assistant", "content": message})
+            project_state.conversation_history = new_history
+            if hasattr(self.state, "db") and hasattr(self.state.db, "save"):
+                await self.state.db.save(session_id, project_state.model_dump())
+            if hasattr(self.state, "cache"):
+                self.state.cache[session_id] = project_state
+            available_agents = self._get_available_agents(project_state)
+            return {
+                "message": message,
+                "state_snapshot": project_state.model_dump() if hasattr(project_state, "model_dump") else None,
+                "artifacts": [],
+                "intent": intent,
+                "plan": plan,
+                "project_state": project_state,
+                "agent_results": [],
+                "available_agents": available_agents,
+                "current_step": None,
+                "next_step": None,
+                "awaiting_user_action": False,
+            }
         if not plan or not plan.tasks or not project_state:
             return {
                 "message": "No plan or state.",
@@ -362,7 +392,27 @@ class MasterOrchestrator:
                             next_agent_id,
                         ),
                     }
-                message = summary_text
+                # Decide what the user sees for this step.
+                agent_id = executed.get("agent_id") or ""
+                # For execution_planner, prefer the orchestrator summary so we can describe the actual roadmap
+                # (phases, milestones, tasks) based on state rather than the agent's terse counts.
+                if agent_id == "execution_planner":
+                    message = summary_text
+                else:
+                    # Prefer agent's actual content when present (conversational always; functional when substantive).
+                    agent_content = (executed.get("content") or "").strip()
+                    entry = get_agent_by_id(agent_id)
+                    is_conversational = (entry or {}).get("interaction_mode") == "conversational"
+                    use_agent_content = (
+                        (is_conversational and agent_content)
+                        or (not is_conversational and agent_content and len(agent_content) >= 80)
+                    )
+                    if use_agent_content:
+                        message = agent_content
+                        if next_agent_id:
+                            message = f"{message}\n\nWhen you're ready, say **continue** to move to the next step."
+                    else:
+                        message = summary_text
             else:
                 project_state = await self.state.update(
                     session_id,
@@ -517,6 +567,57 @@ class MasterOrchestrator:
             f"or say 'continue' to move to {next_name}."
         )
 
+    async def _general_inquiry_message(self, project_state: Any, user_input: str) -> str:
+        """Contextual reply when intent is unknown; no agents run (but we may call the LLM to phrase it)."""
+        llm = getattr(self, "_summary_llm", None)
+        phase = getattr(project_state, "current_phase", "initialization") or "initialization"
+        arch = self._to_dict(getattr(project_state, "architecture", None))
+        roadmap = self._to_dict(getattr(project_state, "roadmap", None))
+        summary = {
+            "phase": phase,
+            "requirements_complete": bool(getattr(getattr(project_state, "requirements", None), "is_complete", False)),
+            "has_architecture": bool(arch and (arch.get("tech_stack") or arch.get("system_diagram") or arch.get("api_design"))),
+            "has_roadmap": bool(roadmap and (roadmap.get("phases") or roadmap.get("implementation_tasks"))),
+            "has_mockups": bool(getattr(project_state, "mockups", None)),
+        }
+        if llm is not None:
+            try:
+                prompt = (
+                    "You are the orchestrator for a project-planning assistant. The user's message wasn't clearly a task. "
+                    "In 2–4 short sentences, explain:\n"
+                    "1) Where we are in the process (phase and which deliverables are complete),\n"
+                    "2) Briefly answer their question if there is one, and\n"
+                    "3) How they can proceed (e.g., say 'continue' for the next step or ask to change something).\n\n"
+                    f"Project state summary: {json.dumps(summary)}\nUser message: {user_input!r}\n\nYour reply:"
+                )
+                if hasattr(llm, "ainvoke"):
+                    response = await llm.ainvoke(prompt)
+                else:
+                    response = llm.invoke(prompt)
+                text = self._extract_llm_text(response)
+                if text:
+                    return text
+            except Exception:
+                pass
+        # Deterministic fallback when LLM is unavailable or fails.
+        parts = [f"We're in the **{phase.replace('_', ' ')}** phase."]
+        if summary["requirements_complete"]:
+            parts.append("Requirements are complete.")
+        if summary["has_architecture"]:
+            parts.append("Architecture (tech stack and diagrams) is ready.")
+        if summary["has_roadmap"]:
+            parts.append("We have a roadmap.")
+        if summary["has_mockups"]:
+            parts.append("Mockups have been generated.")
+        if (user_input or "").strip():
+            parts.append(
+                "You can say **continue** to move to the next step, ask to change something specific, "
+                "or tell me what you'd like to focus on."
+            )
+        else:
+            parts.append("You can say **continue** to move to the next step, or ask to change something.")
+        return " ".join(parts)
+
     def _resolve_next_auto_agent_id(
         self,
         completed_agent_id: str | None,
@@ -670,11 +771,25 @@ class MasterOrchestrator:
             roadmap = self._to_dict(getattr(project_state, "roadmap", None))
             phases = roadmap.get("phases") or []
             milestones = roadmap.get("milestones") or []
-            return (
-                f"The execution plan is ready with {len(phases)} phases and {len(milestones)} milestones. "
-                "The frontend can now render the roadmap, tasks, and milestone structure. "
+            tasks = roadmap.get("implementation_tasks") or []
+            phase_names = [p.get("name") for p in phases[:3] if isinstance(p, dict) and p.get("name")]
+            milestone_names = [m.get("name") for m in milestones[:3] if isinstance(m, dict) and m.get("name")]
+            parts: list[str] = []
+            parts.append(
+                f"The execution plan is ready with {len(phases)} phases, {len(milestones)} milestones, "
+                f"and {len(tasks)} implementation tasks."
+            )
+            if phase_names:
+                suffix = "..." if len(phases) > len(phase_names) else ""
+                parts.append(f" Key phases include: {', '.join(phase_names)}{suffix}.")
+            if milestone_names:
+                suffix = "..." if len(milestones) > len(milestone_names) else ""
+                parts.append(f" Key milestones include: {', '.join(milestone_names)}{suffix}.")
+            parts.append(
+                " The frontend can now render the full roadmap view, including phases, milestones, and tasks. "
                 f"{next_prompt}"
             )
+            return "".join(parts)
         if agent_id == "mockup_agent":
             mockups = getattr(project_state, "mockups", []) or []
             return (
