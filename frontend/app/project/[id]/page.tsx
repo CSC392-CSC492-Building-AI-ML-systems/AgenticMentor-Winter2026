@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useParams } from "next/navigation";
 import TopNav from "@/components/layout/TopNav";
 import ConsoleWindow from "@/components/console/ConsoleWindow";
 import RequirementPanel from "@/components/panels/RequirementPanel";
@@ -7,9 +8,40 @@ import ArchitecturePanel from "@/components/panels/ArchitecturePanel";
 import WireframePanel from "@/components/panels/WireframePanel";
 import ExecutionPanel from "@/components/panels/ExecutionPanel";
 import RequireAuth from "@/components/auth/RequireAuth";
+import { useProjectStore } from "@/store/useProjectStore";
+import { useAuthStore } from "@/store/useAuthStore";
+import { fetchWithAuth } from "@/lib/api";
 
 export default function ProjectPage() {
   const [activeTab, setActiveTab] = useState("req");
+  const params = useParams();
+  const projectId = params?.id as string | undefined;
+
+  const { setProjectId, applyStateSnapshot, setAvailableAgents, setIsLoading } = useProjectStore();
+  const { idToken } = useAuthStore();
+
+  useEffect(() => {
+    if (!projectId || !idToken) return;
+    setProjectId(projectId);
+
+    const loadProject = async () => {
+      setIsLoading(true);
+      try {
+        const res = await fetchWithAuth(`/projects/${projectId}`, { token: idToken });
+        if (res.ok) {
+          const data = await res.json();
+          applyStateSnapshot(data);
+          if (data.available_agents) setAvailableAgents(data.available_agents);
+        }
+      } catch (err) {
+        console.error("[ProjectPage] Failed to load project state:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadProject();
+  }, [projectId, idToken]);
 
   const tabs = [
     { id: "req", label: "01_Requirements" },

@@ -97,6 +97,33 @@ class ProjectResponse(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     message: str = Field(..., min_length=1)
+    agent_selection_mode: str = "auto"          # "auto" | "manual"
+    selected_agent_id: Optional[str] = None     # required when mode is "manual"
+
+
+class AgentResult(BaseModel):
+    """Result from a single agent execution."""
+    agent_id: str
+    agent_name: str
+    status: str  # "success" | "failed_timeout" | "failed_runtime" | "skipped_unavailable" | "blocked_dependency"
+    content: str = ""
+    state_delta_keys: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    blocked_by: Optional[List[str]] = None
+
+
+class AvailableAgent(BaseModel):
+    """Agent availability entry returned to the UI agent picker."""
+    agent_id: str
+    agent_name: str
+    description: str = ""
+    interaction_mode: str = "functional"
+    is_phase_compatible: bool
+    unmet_requires: List[str] = Field(default_factory=list)
+    blocked_by: List[str] = Field(default_factory=list)
+    is_available: bool
+    expensive: bool = False
+    supports_selective_regen: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -104,23 +131,25 @@ class ChatResponse(BaseModel):
     message: str
     state: Dict[str, Any]
     artifacts: Dict[str, Any]
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "message": "What type of application are you building?",
-                "state": {
-                    "requirements": {
-                        "is_complete": False,
-                        "progress": 0.1
-                    }
-                },
-                "artifacts": {
-                    "decisions": [],
-                    "assumptions": []
-                }
-            }
-        }
+    agent_results: List[AgentResult] = Field(default_factory=list)
+    available_agents: List[AvailableAgent] = Field(default_factory=list)
+    current_phase: str = "initialization"
+
+
+class ProjectStateResponse(BaseModel):
+    """Full project state returned to the frontend (GET /projects/{id})."""
+    project_id: str
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+    last_updated: datetime
+    current_phase: str = "initialization"
+    requirements: Dict[str, Any] = Field(default_factory=dict)
+    architecture: Dict[str, Any] = Field(default_factory=dict)
+    roadmap: Dict[str, Any] = Field(default_factory=dict)
+    mockups: List[Dict[str, Any]] = Field(default_factory=list)
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    available_agents: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class FirebaseUser(BaseModel):

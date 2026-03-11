@@ -3,6 +3,7 @@ import { useState, KeyboardEvent, useRef, useEffect } from "react";
 import { ArrowUpRight } from "lucide-react";
 
 const AGENTS = [
+  { id: "auto", name: "Auto (Orchestrator)", color: "white" },
   { id: "requirements", name: "Requirements Collector", color: "purple" },
   { id: "project_architect", name: "Project Architect", color: "blue" },
   { id: "execution_planner", name: "Execution Planner", color: "red" },
