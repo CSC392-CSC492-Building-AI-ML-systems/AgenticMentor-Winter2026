@@ -12,6 +12,7 @@ from src.orchestrator.execution_plan import ExecutionPlan, Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
 from src.orchestrator.intent_classifier import IntentClassifier
+from src.utils.prompt import format_conversation_history
 
 # Maps agent_id → the phase that becomes active after that agent completes.
 PHASE_TRANSITION_MAP: dict[str, str] = {
@@ -214,10 +215,11 @@ class MasterOrchestrator:
         if (
             agent_selection_mode == "auto"
             and intent
-            and (intent.get("primary_intent") or "").strip() == "unknown"
+            and (intent.get("primary_intent") or "").strip() in ("unknown", "general_inquiry")
             and project_state is not None
         ):
-            message = await self._general_inquiry_message(project_state, user_input or "")
+            conversation_history = list(getattr(project_state, "conversation_history", None) or [])
+            message = await self._general_inquiry_message(project_state, user_input or "", conversation_history)
             new_history = list(getattr(project_state, "conversation_history", None) or [])
             new_history.append({"role": "user", "content": user_input or ""})
             new_history.append({"role": "assistant", "content": message})
@@ -567,8 +569,17 @@ class MasterOrchestrator:
             f"or say 'continue' to move to {next_name}."
         )
 
-    async def _general_inquiry_message(self, project_state: Any, user_input: str) -> str:
-        """Contextual reply when intent is unknown; no agents run (but we may call the LLM to phrase it)."""
+    async def _general_inquiry_message(
+        self,
+        project_state: Any,
+        user_input: str,
+        conversation_history: list[dict] | None = None,
+    ) -> str:
+        """Contextual reply when intent is unknown; no agents run (but we may call the LLM to phrase it).
+
+        Uses ``conversation_history`` (last N turns from ProjectState) so the LLM can
+        reference what has already been discussed when answering the user's question.
+        """
         llm = getattr(self, "_summary_llm", None)
         phase = getattr(project_state, "current_phase", "initialization") or "initialization"
         arch = self._to_dict(getattr(project_state, "architecture", None))
@@ -580,15 +591,25 @@ class MasterOrchestrator:
             "has_roadmap": bool(roadmap and (roadmap.get("phases") or roadmap.get("implementation_tasks"))),
             "has_mockups": bool(getattr(project_state, "mockups", None)),
         }
+        # Format recent conversation turns for the LLM (excludes the current user message
+        # which is appended separately, so we take the history *before* this turn).
+        history_text = format_conversation_history(conversation_history or [])
         if llm is not None:
             try:
+                history_section = (
+                    f"\n\nRecent conversation:\n{history_text}" if history_text else ""
+                )
                 prompt = (
-                    "You are the orchestrator for a project-planning assistant. The user's message wasn't clearly a task. "
-                    "In 2–4 short sentences, explain:\n"
-                    "1) Where we are in the process (phase and which deliverables are complete),\n"
-                    "2) Briefly answer their question if there is one, and\n"
-                    "3) How they can proceed (e.g., say 'continue' for the next step or ask to change something).\n\n"
-                    f"Project state summary: {json.dumps(summary)}\nUser message: {user_input!r}\n\nYour reply:"
+                    "You are the orchestrator for a project-planning assistant. "
+                    "The user's message wasn't clearly a task request, so no agent will run. "
+                    "Using the project state and conversation history below, respond helpfully in 2–4 short sentences (unless prompted differently by the user):\n"
+                    "1) Briefly answer their question, referencing prior conversation context where relevant.\n"
+                    "2) Note where we are in the process (current phase and which deliverables are done).\n"
+                    "3) Tell the user how to proceed (e.g. say 'continue' or ask to change something).\n"
+                    "Do not make up information that isn't in the project state or conversation history.\n\n"
+                    f"Project state summary: {json.dumps(summary)}"
+                    f"{history_section}\n"
+                    f"User message: {user_input!r}\n\nYour reply:"
                 )
                 if hasattr(llm, "ainvoke"):
                     response = await llm.ainvoke(prompt)

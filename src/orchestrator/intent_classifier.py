@@ -54,7 +54,7 @@ class IntentResult(TypedDict, total=False):
 
 class IntentResultModel(BaseModel):
     """Pydantic model for LangChain structured output (intent classification)."""
-    primary_intent: str = Field(description="One of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, or unknown")
+    primary_intent: str = Field(description="One of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, general_inquiry, or unknown")
     requires_agents: list[str] = Field(description="List of agent ids that should handle this request. Use ONE agent for narrow requests ('only tech stack'). Use MULTIPLE when user asks for several things (e.g. tech stack and roadmap -> project_architect, execution_planner).")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0.0 to 1.0")
     expand_downstream: bool = Field(default=True, description="If True, system will also run downstream agents (e.g. architect -> planner -> mockup). Set to False when user asks for ONLY a specific output (e.g. 'only update the tech stack', 'just the architecture').")
@@ -84,9 +84,10 @@ Rules (apply in order):
 3. Narrow request → one agent, no downstream. "Just the tech stack", "only an ERD", "give me a pdf", "only update architecture" → requires_agents = only that agent, expand_downstream=false.
 4. Multiple asks → multiple agents. "Tech stack and roadmap", "architecture and wireframes" → requires_agents = both agent ids, expand_downstream=true unless they said "only" or "just".
 5. General/content request → one or more agents, expand_downstream=true. "Give me a diagram", "what's the tech stack", "show me wireframes" (no file format) → pick the right agent(s); downstream expansion is fine.
-6. Unclear or chit-chat → primary_intent="unknown", requires_agents=[], confidence low.
+6. Project status/progress question → primary_intent="general_inquiry", requires_agents=[], confidence medium-high. Use this when the user asks about what has been done, where we are in the process, what decisions were made, a summary of the project, or any question the orchestrator can answer from project state alone — WITHOUT needing to run an agent. Examples: "how is the project going?", "what have we decided so far?", "summarize what we've done", "what phase are we in?", "remind me what features we picked".
+7. True chit-chat with no project relevance → primary_intent="unknown", requires_agents=[], confidence low. Only use unknown when the message has nothing to do with the project at all.
 
-Output: primary_intent (one of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, unknown), requires_agents (list of agent ids above), confidence (0.0-1.0), expand_downstream (bool)."""
+Output: primary_intent (one of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, general_inquiry, unknown), requires_agents (list of agent ids above), confidence (0.0-1.0), expand_downstream (bool)."""
 
 
 # When the current message clearly asks for a file/export, prefer export (avoids tie with mockup from context).
@@ -197,6 +198,19 @@ class IntentClassifier:
                 best_current_score = score_current
 
         if best_intent is None:
+            # Check for general project-status/progress questions before falling back to unknown.
+            general_inquiry_keywords = [
+                "progress", "status", "so far", "what have we", "what did we",
+                "where are we", "summary", "summarize", "remind me", "what's been done",
+                "what has been done", "what phase", "how is the project", "what decisions",
+                "what features", "what we decided", "overview", "recap",
+            ]
+            if any(kw in current_text for kw in general_inquiry_keywords):
+                return IntentResult(
+                    primary_intent="general_inquiry",
+                    requires_agents=[],
+                    confidence=0.7,
+                )
             return IntentResult(
                 primary_intent="unknown",
                 requires_agents=[],

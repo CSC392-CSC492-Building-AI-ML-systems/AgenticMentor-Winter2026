@@ -97,13 +97,14 @@ async def main() -> None:
             response = await orchestrator.process_request(user_input, session_id)
         message = response.get("message") or ""
         print(f"{message}\n")
-        available_agents = response.get("available_agents") or []
-        ready = [a for a in available_agents if a.get("is_available")]
-        if ready:
-            print("Available agents now:")
-            for a in ready:
-                print(f"  - {a['agent_id']}: {a.get('agent_name', '')}")
-            print()
+        # available_agents = response.get("available_agents") or []
+        # ready = [a for a in available_agents if a.get("is_available")]
+        # if ready:
+        #     print("Available agents now:")
+        #     for a in ready:
+        #         print(f"  - {a['agent_id']}: {a.get('agent_name', '')}")
+            # print()
+        print()
 
 
 if __name__ == "__main__":
