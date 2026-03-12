@@ -144,9 +144,9 @@ class ExecutionPlannerAgent(BaseAgent):
         }
 
         # Run the LangGraph workflow
-        print("  [1/4] Analyzing impact and determining regeneration plan...", flush=True)
+        # print("  [1/4] Analyzing impact and determining regeneration plan...", flush=True)
         final_state = await self._graph.ainvoke(initial_state)
-        print("  [4/4] Building execution plan output...", flush=True)
+        # print("  [4/4] Building execution plan output...", flush=True)
 
         # Build typed Pydantic models from final state
         phases = [
@@ -310,7 +310,7 @@ Return JSON with components_to_regenerate (list), reasoning (string), preserve_c
         requirements = state.get("requirements", {})
         user_request = state.get("user_request") or ""
 
-        print("  [2/4] Generating phases and milestones...", flush=True)
+        # print("  [2/4] Generating phases and milestones...", flush=True)
 
         arch_json = json.dumps(architecture, indent=2, ensure_ascii=False)
         req_json = json.dumps(requirements, indent=2, ensure_ascii=False)
@@ -349,13 +349,13 @@ Rules:
                         phase["order"] = i + 1
                 return {"phases": phases}
             else:
-                print(
-                    f"  [warn] Phase generation: LLM returned {len(phases) if phases else 0} phases "
+                # print(
+                #     f"  [warn] Phase generation: LLM returned {len(phases) if phases else 0} phases "
                     "but validation failed. Using fallback.",
                     flush=True,
                 )
         except Exception as exc:
-            print(f"  [warn] Phase generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
+            # print(f"  [warn] Phase generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
 
         return {"phases": self._default_phases()}
 
@@ -406,13 +406,13 @@ Rules:
             if milestones and all(isinstance(m, dict) and "name" in m for m in milestones):
                 return {"milestones": milestones}
             else:
-                print(
-                    f"  [warn] Milestone generation: LLM returned {len(milestones) if milestones else 0} milestones "
+                # print(
+                #     f"  [warn] Milestone generation: LLM returned {len(milestones) if milestones else 0} milestones "
                     "but validation failed. Using fallback.",
                     flush=True,
                 )
         except Exception as exc:
-            print(f"  [warn] Milestone generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
+            # print(f"  [warn] Milestone generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
 
         return {"milestones": self._default_milestones(phases)}
 
@@ -430,7 +430,7 @@ Rules:
         requirements = state.get("requirements", {})
         user_request = state.get("user_request") or ""
 
-        print("  [3/4] Generating implementation tasks...", flush=True)
+        # print("  [3/4] Generating implementation tasks...", flush=True)
 
         phase_names = [
             p.get("name") if isinstance(p, dict) else p.name for p in phases
@@ -494,18 +494,18 @@ Rules:
                         task["external_resources"] = []
                 return {"implementation_tasks": tasks}
             else:
-                print(
-                    f"  [warn] Task generation: LLM returned {len(tasks) if tasks else 0} tasks "
+                # print(
+                #     f"  [warn] Task generation: LLM returned {len(tasks) if tasks else 0} tasks "
                     "but validation failed (missing 'id' or 'title'). Using fallback.",
                     flush=True,
                 )
         except Exception as exc:
-            print(f"  [warn] Task generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
+            # print(f"  [warn] Task generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
 
         # During selective regeneration, prefer the existing tasks over empty stubs
         existing_tasks = existing.get("implementation_tasks")
         if existing_tasks:
-            print("  [info] Using existing tasks as fallback (LLM unavailable).", flush=True)
+            # print("  [info] Using existing tasks as fallback (LLM unavailable).", flush=True)
             return {"implementation_tasks": existing_tasks}
 
         return {"implementation_tasks": self._default_tasks(phases)}

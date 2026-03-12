@@ -215,17 +215,16 @@ class RequirementsAgent(BaseAgent):
                 content = content.split("```")[1].split("```")[0]
             
             updated_reqs = json.loads(content.strip())
-            prev_reqs = state["requirements"]
-            current_dict = prev_reqs.model_dump()
+            current_dict = state["requirements"].model_dump()
             
             # List fields: replace when LLM returns a new list so corrections (e.g. "no user authentication") take effect
             list_keys = {"key_features", "technical_constraints", "business_goals", "target_users"}
             merged_count = 0
             for key, value in updated_reqs.items():
                 if key == "pending_confirmation":
-                    current_dict[key] = bool(value)
-                    merged_count += 1
-                elif value is not None and (value != [] or key in list_keys) and value != "":
+                    # Ignore pending_confirmation when fill-in defaults flow is disabled
+                    continue
+                if value is not None and (value != [] or key in list_keys) and value != "":
                     if isinstance(value, list) and key in current_dict:
                         if key in list_keys:
                             current_dict[key] = list(value)
@@ -237,39 +236,6 @@ class RequirementsAgent(BaseAgent):
                     merged_count += 1
             
             reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
-            msg_lower = (last_user_message or "").lower()
-            # Only set pending_confirmation when user asked to fill in AND we're not already past confirmation
-            # (avoids asking for confirmation again after user already confirmed or made a change)
-            progress_before = getattr(prev_reqs, "progress", 0.0)
-            fill_phrases = ("fill in", "pick everything", "pick for me", "you decide", "use defaults", "just pick", "fill in all")
-            if (
-                any(p in msg_lower for p in fill_phrases)
-                and merged_count >= 4
-                and not getattr(reqs, "pending_confirmation", False)
-                and progress_before < 0.85
-            ):
-                current_dict["pending_confirmation"] = True
-                reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
-            # If requirements were previously complete and the user is asking to change/add/remove things,
-            # treat this as re-opening requirements until they confirm again.
-            change_phrases = (
-                "add more",
-                "add another",
-                "add feature",
-                "more features",
-                "change",
-                "update",
-                "edit",
-                "remove",
-                "delete",
-                "tweak",
-            )
-            if any(p in msg_lower for p in change_phrases) and (
-                getattr(prev_reqs, "is_complete", False) or getattr(prev_reqs, "progress", 0.0) >= 0.85
-            ):
-                current_dict["is_complete"] = False
-                current_dict["pending_confirmation"] = True
-                reqs = RequirementsState(**_coerce_requirements_dict(current_dict))
             state["requirements"] = reqs
             # print(f"Merged {merged_count} requirement updates")
             
@@ -307,9 +273,6 @@ class RequirementsAgent(BaseAgent):
             current_dict = state["requirements"].model_dump()
             current_dict["is_complete"] = completion_data.get("is_complete", False)
             current_dict["progress"] = completion_data.get("completeness_score", 0.0)
-            # When user asked us to fill in defaults, don't mark complete until they confirm
-            if getattr(state["requirements"], "pending_confirmation", False):
-                current_dict["is_complete"] = False
             
             state["requirements"] = RequirementsState(**current_dict)
             
@@ -331,34 +294,11 @@ class RequirementsAgent(BaseAgent):
         # print("[QUESTION] Generating next question...")
         
         reqs = state["requirements"]
-        pending = getattr(reqs, "pending_confirmation", False)
+        conv_history = format_conversation_history(
+            [{"role": m.type, "content": m.content} for m in state["messages"]]
+        )
+        question_prompt = f"""Based on the current requirements and conversation, generate the NEXT SINGLE QUESTION to ask.
         
-        if pending:
-            # Ask user to confirm the filled-in defaults before proceeding
-            question_prompt = f"""The user asked you to fill in the details. You have filled in the following. Summarize briefly and ask them to confirm.
-
-Current Requirements (what we assumed):
-{reqs.model_dump_json(indent=2)}
-
-Generate ONE short, friendly message that: (1) briefly summarizes the key choices (e.g. project type, target users, main features), (2) asks "Does this work for you, or would you like to change anything?" Return ONLY that message, nothing else."""
-            messages = [
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=question_prompt),
-            ]
-            response = await self.llm.ainvoke(messages)
-            question = response.content.strip().strip('"\'')
-            state["next_question"] = question
-            state["messages"].append(AIMessage(content=question))
-            # Clear pending_confirmation so that when user says "yes" we can mark complete
-            current_dict = reqs.model_dump()
-            current_dict["pending_confirmation"] = False
-            state["requirements"] = RequirementsState(**_coerce_requirements_dict(current_dict))
-        else:
-            conv_history = format_conversation_history(
-                [{"role": m.type, "content": m.content} for m in state["messages"]]
-            )
-            question_prompt = f"""Based on the current requirements and conversation, generate the NEXT SINGLE QUESTION to ask.
-
 Current Requirements:
 {reqs.model_dump_json(indent=2)}
 
@@ -368,14 +308,14 @@ Recent Conversation:
 Generate ONE clear, focused question that will help gather the most important missing information.
 Make it conversational and natural. Build on what you already know.
 Return ONLY the question text, nothing else."""
-            messages = [
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=question_prompt),
-            ]
-            response = await self.llm.ainvoke(messages)
-            question = response.content.strip().strip('"\'')
-            state["next_question"] = question
-            state["messages"].append(AIMessage(content=question))
+        messages = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=question_prompt),
+        ]
+        response = await self.llm.ainvoke(messages)
+        question = response.content.strip().strip('"\'')
+        state["next_question"] = question
+        state["messages"].append(AIMessage(content=question))
         
         # print(f"Question: '{state['next_question'][:200]}...'")
         return state
@@ -383,10 +323,6 @@ Return ONLY the question text, nothing else."""
     def _should_continue(self, state: AgentState) -> str:
         """Determine if we should continue asking questions or end."""
         reqs = state["requirements"]
-        # When we filled defaults, ask for confirmation before marking complete
-        if getattr(reqs, "pending_confirmation", False):
-            # print("Pending confirmation—asking user to confirm filled-in details")
-            return "continue"
         if reqs.is_complete or reqs.progress >= 0.85:
             # print("Requirements gathering complete")
             return "complete"

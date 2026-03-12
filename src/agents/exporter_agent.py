@@ -312,11 +312,11 @@ class ExporterAgent(BaseAgent):
             llm_client=llm_client,
             review_config=review_config or {"min_score": 0.80},
         )
-        print("Initializing Exporter Agent...")
+        # print("Initializing Exporter Agent...")
 
     async def _generate(self, input: Any, context: dict, tools: list) -> Dict[str, Any]:
         """Agent-specific generation logic."""
-        print("--- EXPORTER AGENT GENERATING ---", flush=True)
+        # print("--- EXPORTER AGENT GENERATING ---", flush=True)
         payload = input if isinstance(input, dict) else context
         project_name = payload.get("project_name") or "Untitled Project"
         if not isinstance(project_name, str):
@@ -327,7 +327,7 @@ class ExporterAgent(BaseAgent):
         mockups = self._extract_fragment(payload.get("mockups", payload.get("mockup", {})))
 
         executive_summary = await self._generate_executive_summary(project_name, reqs, arch, roadmap, mockups)
-        print("  [1/2] Compiling Markdown Artifacts...", flush=True)
+        # print("  [1/2] Compiling Markdown Artifacts...", flush=True)
         raw_markdown = compile_markdown_document(
             project_name=project_name,
             summary=executive_summary,
@@ -338,7 +338,7 @@ class ExporterAgent(BaseAgent):
         )
         final_markdown = format_markdown(raw_markdown)
 
-        print("  [2/2] Running PDF Exporter Tool...", flush=True)
+        # print("  [2/2] Running PDF Exporter Tool...", flush=True)
         pdf_tool = PDFExporter()
         safe_name = (project_name or "Untitled Project").lower().replace(" ", "_")
         export_dir = "outputs"
@@ -416,11 +416,11 @@ class ExporterAgent(BaseAgent):
         )
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
         try:
-            print("  [LLM] Generating Executive Summary...", flush=True)
+            # print("  [LLM] Generating Executive Summary...", flush=True)
             response = await self.llm.ainvoke(messages)
             return response.content.strip()
         except Exception as e:
-            print(f"  [Error] Failed to generate summary: {e}")
+            # print(f"  [Error] Failed to generate summary: {e}")
             return "Executive summary generation failed."
 
     def _extract_fragment(self, data: Any) -> Any:

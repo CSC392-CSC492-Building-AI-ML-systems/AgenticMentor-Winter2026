@@ -34,15 +34,15 @@ class MockupAgent(BaseAgent):
         request = MockupAgentRequest(**input_data)
         
         # Generate wireframe spec via LLM
-        print("  [1/3] Generating wireframe spec (LLM)...", flush=True)
+        # print("  [1/3] Generating wireframe spec (LLM)...", flush=True)
         wireframe_spec = await self._generate_wireframe_spec(request)
         
         # Compile to Excalidraw JSON
-        print("  [2/3] Compiling to Excalidraw scene...", flush=True)
+        # print("  [2/3] Compiling to Excalidraw scene...", flush=True)
         excalidraw_json = self.compiler.compile(wireframe_spec)
         
         # Export artifacts and auto-preview
-        print("  [3/3] Exporting artifacts...", flush=True)
+        # print("  [3/3] Exporting artifacts...", flush=True)
         export_paths = await self._export_artifacts(excalidraw_json, wireframe_spec)
         
         # Build response
@@ -123,7 +123,7 @@ Focus on essential MVP screens only (3-5 screens typical).
             return spec
         
         except Exception as e:
-            print(f"  [mockup] LLM generation failed: {e}, using default spec", flush=True)
+            # print(f"  [mockup] LLM generation failed: {e}, using default spec", flush=True)
             return self._default_wireframe_spec(request)
     
     def _default_wireframe_spec(self, request: MockupAgentRequest) -> WireframeSpec:
@@ -276,7 +276,7 @@ Focus on essential MVP screens only (3-5 screens typical).
         }
         
         # Auto-preview in browser
-        print("  [3.1/3] Opening preview in browser...", flush=True)
+        # print("  [3.1/3] Opening preview in browser...", flush=True)
         preview_info = await self._auto_preview(excalidraw_json, json_path)
         export_paths.update(preview_info)
         
@@ -469,10 +469,10 @@ Focus on essential MVP screens only (3-5 screens typical).
         # Auto-open in browser
         try:
             webbrowser.open(f'file://{html_path_abs}')
-            print(f"  [OK] Preview opened in browser: {html_path.name}", flush=True)
+            # print(f"  [OK] Preview opened in browser: {html_path.name}", flush=True)
         except Exception as e:
-            print(f"  [WARN] Could not auto-open browser: {e}", flush=True)
-            print(f"  -> Open manually: file://{html_path_abs}", flush=True)
+            # print(f"  [WARN] Could not auto-open browser: {e}", flush=True)
+            # print(f"  -> Open manually: file://{html_path_abs}", flush=True)
         
         return preview_info
     
