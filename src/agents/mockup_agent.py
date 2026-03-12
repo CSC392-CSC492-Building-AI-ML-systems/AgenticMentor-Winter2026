@@ -473,7 +473,7 @@ Focus on essential MVP screens only (3-5 screens typical).
         except Exception as e:
             # print(f"  [WARN] Could not auto-open browser: {e}", flush=True)
             # print(f"  -> Open manually: file://{html_path_abs}", flush=True)
-        
+            pass
         return preview_info
     
     def _generate_summary(self, spec: WireframeSpec) -> str:

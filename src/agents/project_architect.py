@@ -492,6 +492,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         rag_snippets = self._get_mermaid_rag_snippets(diagram_kind)
         if rag_snippets:
             # print(f"  [diagram] Using mermaid RAG snippets for {diagram_kind} ({len(rag_snippets)} chars)", flush=True)
+            pass
         rag_block = (
             f"Relevant Mermaid syntax (from docs):\n{rag_snippets}\n\n"
             if rag_snippets else ""
@@ -540,6 +541,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
                     )
                     if retry_rag:
                         # print(f"  [diagram] Using error-based RAG for retry ({len(retry_rag)} chars)", flush=True)
+                        pass
                 retry_rag_block = (
                     f"Relevant Mermaid syntax (for this error):\n{retry_rag}\n\n"
                     if retry_rag else ""
@@ -581,6 +583,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
                 # Compile with mmdc and get real parse errors for retry
                 if attempt == 0:
                     # print(f"  [diagram] Validating {diagram_kind} (mmdc)...", flush=True)
+                    pass
                 valid, parse_error = validate_mermaid(mermaid)
                 if valid:
                     return mermaid

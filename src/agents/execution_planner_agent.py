@@ -351,12 +351,13 @@ Rules:
             else:
                 # print(
                 #     f"  [warn] Phase generation: LLM returned {len(phases) if phases else 0} phases "
-                    "but validation failed. Using fallback.",
-                    flush=True,
-                )
+                #     "but validation failed. Using fallback.",
+                #     flush=True,
+                # )
+                pass
         except Exception as exc:
             # print(f"  [warn] Phase generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
-
+            pass
         return {"phases": self._default_phases()}
 
     async def _generate_milestones_node(self, state: PlannerState) -> dict:
@@ -408,12 +409,13 @@ Rules:
             else:
                 # print(
                 #     f"  [warn] Milestone generation: LLM returned {len(milestones) if milestones else 0} milestones "
-                    "but validation failed. Using fallback.",
-                    flush=True,
-                )
+                #     "but validation failed. Using fallback.",
+                #     flush=True,
+                # )
+                pass
         except Exception as exc:
             # print(f"  [warn] Milestone generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
-
+            pass
         return {"milestones": self._default_milestones(phases)}
 
     async def _generate_tasks_node(self, state: PlannerState) -> dict:
@@ -496,11 +498,13 @@ Rules:
             else:
                 # print(
                 #     f"  [warn] Task generation: LLM returned {len(tasks) if tasks else 0} tasks "
-                    "but validation failed (missing 'id' or 'title'). Using fallback.",
-                    flush=True,
-                )
+                #     "but validation failed (missing 'id' or 'title'). Using fallback.",
+                #     flush=True,
+                # )
+                pass
         except Exception as exc:
             # print(f"  [warn] Task generation failed ({type(exc).__name__}: {exc}). Using fallback.", flush=True)
+            pass
 
         # During selective regeneration, prefer the existing tasks over empty stubs
         existing_tasks = existing.get("implementation_tasks")
