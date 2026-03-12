@@ -27,6 +27,7 @@ from src.orchestrator.master_agent import MasterOrchestrator
 from src.state.project_state import ArchitectureDefinition, ProjectState, Requirements
 from src.state.state_manager import StateManager
 from src.storage.memory_store import InMemoryPersistenceAdapter
+from src.protocols.schemas import RequirementsState
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +57,25 @@ class FakeArchitectAgent:
 
 
 class FakeRequirementsCollector:
+    def __init__(self, *, is_complete: bool = True, progress: float = 1.0):
+        self._is_complete = is_complete
+        self._progress = progress
+
     async def process_message(self, user_input, requirements_state, history):
-        return {"response": "Requirements noted.", "requirements": None}
+        return {
+            "response": "Requirements noted.",
+            "requirements": RequirementsState(
+                project_type="web app",
+                target_users=["solo user"],
+                key_features=["Login", "Dashboard"],
+                technical_constraints=["Python"],
+                business_goals=["Stay organized"],
+                timeline="2 weeks",
+                budget="$0",
+                is_complete=self._is_complete,
+                progress=self._progress,
+            ),
+        }
 
 
 class FakeExecutionPlannerAgent:
@@ -136,12 +154,8 @@ def _plan_with_agents(*agent_ids: str) -> ExecutionPlan:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_downstream_execution_planner_runs_after_architect():
-    """
-    3.5 core: when project_architect is in the plan, execution_planner is
-    appended downstream. Both appear in agent_results in the correct order.
-    execution_planner is now wired and should execute successfully.
-    """
+async def test_auto_mode_stops_after_architect_checkpoint():
+    """Auto mode should execute only project_architect and expose execution_planner as the next step."""
     session_id = "test-35-downstream"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
@@ -165,24 +179,76 @@ async def test_downstream_execution_planner_runs_after_architect():
 
     response = await orch.process_request("Design the architecture", session_id)
 
-    # project_architect must have been fetched from registry
     assert "project_architect" in registry.called, "project_architect should have been fetched"
-    # execution_planner must have been fetched from registry (even if _run_agent skips it)
-    assert "execution_planner" in registry.called, "execution_planner should have been fetched"
-    # Order: project_architect before execution_planner
-    assert registry.called.index("project_architect") < registry.called.index("execution_planner"), \
-        "project_architect must be fetched before execution_planner"
-
-    # Both should appear in agent_results
     result_ids = [ar["agent_id"] for ar in response["agent_results"]]
-    assert "project_architect" in result_ids
-    assert "execution_planner" in result_ids
-    assert result_ids.index("project_architect") < result_ids.index("execution_planner"), \
-        "project_architect must appear before execution_planner in agent_results"
-    exec_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "execution_planner")
-    assert exec_result["status"] == "success"
+    assert result_ids == ["project_architect"]
+    assert "execution_planner" not in registry.called
+    assert response["current_step"]["agent_id"] == "project_architect"
+    assert response["next_step"]["agent_id"] == "execution_planner"
+    assert response["awaiting_user_action"] is True
 
-    print("  PASS: downstream — execution_planner planned and executed after project_architect")
+    state_dict = await persistence.get(session_id)
+    assert state_dict["current_phase"] == "architecture_complete"
+    assert state_dict["awaiting_user_action"] is True
+    assert state_dict["next_recommended_agent_id"] == "execution_planner"
+    print("  PASS: auto mode stops after architect and exposes execution_planner as the next step")
+
+
+@pytest.mark.asyncio
+async def test_requirements_completion_checkpoints_to_architect():
+    """A completed requirements turn should checkpoint into project_architect."""
+    session_id = "test-35-req-checkpoint"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+
+    seed = ProjectState(session_id=session_id, current_phase="initialization", requirements=Requirements())
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = CapturingRegistry({"requirements_collector": FakeRequirementsCollector(is_complete=True, progress=1.0)})
+    plan = _plan_with_agents("requirements_collector")
+    orch = _make_orchestrator(sm, seed, registry, plan)
+
+    response = await orch.process_request("I need a task app", session_id)
+
+    assert [ar["agent_id"] for ar in response["agent_results"]] == ["requirements_collector"]
+    assert response["current_step"]["agent_id"] == "requirements_collector"
+    assert response["next_step"]["agent_id"] == "project_architect"
+    assert response["awaiting_user_action"] is True
+
+    state_dict = await persistence.get(session_id)
+    assert state_dict["current_phase"] == "requirements_complete"
+    assert state_dict["awaiting_user_action"] is True
+    assert state_dict["next_recommended_agent_id"] == "project_architect"
+    print("  PASS: requirements completion checkpoints into project_architect")
+
+
+@pytest.mark.asyncio
+async def test_incomplete_requirements_does_not_checkpoint_to_architect():
+    """An incomplete requirements turn should remain in requirements gathering."""
+    session_id = "test-35-req-incomplete"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+
+    seed = ProjectState(session_id=session_id, current_phase="initialization", requirements=Requirements())
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = CapturingRegistry({"requirements_collector": FakeRequirementsCollector(is_complete=False, progress=0.6)})
+    plan = _plan_with_agents("requirements_collector")
+    orch = _make_orchestrator(sm, seed, registry, plan)
+
+    response = await orch.process_request("I need a task app", session_id)
+
+    assert [ar["agent_id"] for ar in response["agent_results"]] == ["requirements_collector"]
+    assert response["current_step"]["agent_id"] == "requirements_collector"
+    assert response["next_step"] is None
+    assert response["awaiting_user_action"] is False
+
+    state_dict = await persistence.get(session_id)
+    assert state_dict["current_phase"] == "initialization"
+    assert state_dict["requirements"]["is_complete"] is False
+    assert state_dict["awaiting_user_action"] is False
+    assert state_dict["next_recommended_agent_id"] is None
+    print("  PASS: incomplete requirements do not checkpoint into project_architect")
 
 
 @pytest.mark.asyncio
@@ -214,57 +280,96 @@ async def test_phase_transitions_after_architect():
 
 
 @pytest.mark.asyncio
-async def test_change_request_reruns_downstream():
+async def test_explicit_continue_runs_execution_planner_only():
     """
-    3.5 change request: seed state with existing architecture (Node.js),
-    then simulate a change request that re-runs project_architect with a new
-    stack (Python) and also triggers execution_planner downstream.
+    After architect completes and checkpoints the flow, an explicit continue
+    should run execution_planner only.
     """
     session_id = "test-35-change"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
 
-    # Seed: project already has a Node.js architecture
     seed = ProjectState(
         session_id=session_id,
         current_phase="architecture_complete",
         requirements=Requirements(functional=["Login"], constraints=["Node.js"]),
         architecture=ArchitectureDefinition(tech_stack={"backend": "Node.js/Express"}),
+        awaiting_user_action=True,
+        last_completed_agent_id="project_architect",
+        next_recommended_agent_id="execution_planner",
+        last_auto_plan_agent_ids=["project_architect", "execution_planner"],
     )
     await persistence.save(session_id, seed.model_dump())
 
-    # Change request: switch to Python
-    new_architect = FakeArchitectAgent(tech_stack={"backend": "Python/FastAPI"})
     fake_exec_planner = FakeExecutionPlannerAgent()
     registry = CapturingRegistry({
-        "project_architect": new_architect,
         "execution_planner": fake_exec_planner,
     })
 
     plan = _plan_with_agents("project_architect", "execution_planner")
     orch = _make_orchestrator(sm, seed, registry, plan)
 
-    response = await orch.process_request("Change backend to Python/FastAPI", session_id)
+    response = await orch.process_request("continue", session_id)
 
-    # Both agents should have run
-    assert "project_architect" in registry.called
     assert "execution_planner" in registry.called
+    assert "project_architect" not in registry.called
+    assert [ar["agent_id"] for ar in response["agent_results"]] == ["execution_planner"]
+    assert response["current_step"]["agent_id"] == "execution_planner"
+    assert response["next_step"]["agent_id"] == "mockup_agent"
+    assert response["awaiting_user_action"] is True
 
-    # Architecture state should reflect the new stack
     state_dict = await persistence.get(session_id)
-    tech_stack = state_dict.get("architecture", {}).get("tech_stack", {})
-    assert tech_stack.get("backend") == "Python/FastAPI", \
-        f"Expected Python/FastAPI, got {tech_stack}"
-
-    # Phase should reflect the last successful agent in this plan.
     assert state_dict["current_phase"] == "planning_complete"
-    print(f"  PASS: change request — both agents re-ran, stack updated to {tech_stack}")
+    assert state_dict["last_completed_agent_id"] == "execution_planner"
+    assert state_dict["next_recommended_agent_id"] == "mockup_agent"
+    print("  PASS: explicit continue runs execution_planner only")
 
 
 @pytest.mark.asyncio
-async def test_agent_results_populated_for_all_ran_agents():
+async def test_explicit_continue_after_requirements_runs_architect_only():
+    """After the requirements checkpoint, explicit continue should run project_architect only."""
+    session_id = "test-35-req-continue"
+    persistence = InMemoryPersistenceAdapter()
+    sm = StateManager(persistence)
+
+    seed = ProjectState(
+        session_id=session_id,
+        current_phase="requirements_complete",
+        requirements=Requirements(functional=["Login"], constraints=["Python"], is_complete=True, progress=1.0),
+        awaiting_user_action=True,
+        last_completed_agent_id="requirements_collector",
+        next_recommended_agent_id="project_architect",
+        last_auto_plan_agent_ids=["requirements_collector"],
+    )
+    await persistence.save(session_id, seed.model_dump())
+
+    registry = CapturingRegistry({
+        "project_architect": FakeArchitectAgent(),
+        "execution_planner": FakeExecutionPlannerAgent(),
+    })
+
+    plan = _plan_with_agents("requirements_collector", "project_architect")
+    orch = _make_orchestrator(sm, seed, registry, plan)
+
+    response = await orch.process_request("continue", session_id)
+
+    assert "project_architect" in registry.called
+    assert "requirements_collector" not in registry.called
+    assert [ar["agent_id"] for ar in response["agent_results"]] == ["project_architect"]
+    assert response["current_step"]["agent_id"] == "project_architect"
+    assert response["next_step"]["agent_id"] == "execution_planner"
+    assert response["awaiting_user_action"] is True
+
+    state_dict = await persistence.get(session_id)
+    assert state_dict["current_phase"] == "architecture_complete"
+    assert state_dict["next_recommended_agent_id"] == "execution_planner"
+    print("  PASS: explicit continue after requirements runs project_architect only")
+
+
+@pytest.mark.asyncio
+async def test_change_request_reruns_architect_only_and_preserves_checkpoint():
     """
-    3.5 + 3.4: agent_results in response contains entries for every agent in the plan.
+    A change request after architecture should re-run project_architect only in auto mode.
     """
     session_id = "test-35-agent-results"
     persistence = InMemoryPersistenceAdapter()
@@ -272,40 +377,39 @@ async def test_agent_results_populated_for_all_ran_agents():
 
     seed = ProjectState(
         session_id=session_id,
-        current_phase="requirements_complete",
+        current_phase="architecture_complete",
         requirements=Requirements(functional=["Auth"]),
+        architecture=ArchitectureDefinition(tech_stack={"backend": "Node.js/Express"}),
+        awaiting_user_action=True,
+        last_completed_agent_id="project_architect",
+        next_recommended_agent_id="execution_planner",
+        last_auto_plan_agent_ids=["project_architect", "execution_planner"],
     )
     await persistence.save(session_id, seed.model_dump())
 
-    fake_exec_planner = FakeExecutionPlannerAgent()
     registry = CapturingRegistry({
-        "project_architect": FakeArchitectAgent(),
-        "execution_planner": fake_exec_planner,
+        "project_architect": FakeArchitectAgent(tech_stack={"backend": "Python/FastAPI"}),
+        "execution_planner": FakeExecutionPlannerAgent(),
     })
 
     plan = _plan_with_agents("project_architect", "execution_planner")
     orch = _make_orchestrator(sm, seed, registry, plan)
 
-    response = await orch.process_request("Design and plan", session_id)
+    response = await orch.process_request("Change backend to Python/FastAPI", session_id)
 
     agent_result_ids = [ar["agent_id"] for ar in response["agent_results"]]
-    assert "project_architect" in agent_result_ids
-    assert "execution_planner" in agent_result_ids
-
-    for ar in response["agent_results"]:
-        assert ar["status"] in (
-            "success",
-            "skipped_unavailable",
-            "failed_runtime",
-            "failed_timeout",
-            "blocked_dependency",
-        )
-    print(f"  PASS: agent_results populated for all agents: {agent_result_ids}")
+    assert agent_result_ids == ["project_architect"]
+    assert "execution_planner" not in registry.called
+    state_dict = await persistence.get(session_id)
+    assert state_dict["architecture"]["tech_stack"]["backend"] == "Python/FastAPI"
+    assert state_dict["next_recommended_agent_id"] == "execution_planner"
+    assert state_dict["awaiting_user_action"] is True
+    print(f"  PASS: change request re-runs architect only: {agent_result_ids}")
 
 
 @pytest.mark.asyncio
 async def test_downstream_blocked_when_upstream_fails():
-    """If architect fails, downstream execution_planner is marked blocked_dependency."""
+    """If architect fails in auto mode, the flow stops immediately and does not run execution_planner."""
     session_id = "test-35-blocked"
     persistence = InMemoryPersistenceAdapter()
     sm = StateManager(persistence)
@@ -327,12 +431,13 @@ async def test_downstream_blocked_when_upstream_fails():
     response = await orch.process_request("Design and plan", session_id)
 
     arch_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "project_architect")
-    exec_result = next(ar for ar in response["agent_results"] if ar["agent_id"] == "execution_planner")
     assert arch_result["status"] == "failed_runtime"
-    assert exec_result["status"] == "blocked_dependency"
+    assert len(response["agent_results"]) == 1
+    assert "execution_planner" not in registry.called
     state_dict = await persistence.get(session_id)
     assert state_dict["current_phase"] == "requirements_complete"
-    print("  PASS: downstream agent blocked after upstream runtime failure")
+    assert state_dict["awaiting_user_action"] is False
+    print("  PASS: auto mode stops after upstream runtime failure")
 
 
 @pytest.mark.asyncio
@@ -419,10 +524,13 @@ async def test_manual_mode_only_runs_selected_agent():
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     tests = [
-        test_downstream_execution_planner_runs_after_architect,
+        test_auto_mode_stops_after_architect_checkpoint,
+        test_requirements_completion_checkpoints_to_architect,
+        test_incomplete_requirements_does_not_checkpoint_to_architect,
         test_phase_transitions_after_architect,
-        test_change_request_reruns_downstream,
-        test_agent_results_populated_for_all_ran_agents,
+        test_explicit_continue_runs_execution_planner_only,
+        test_explicit_continue_after_requirements_runs_architect_only,
+        test_change_request_reruns_architect_only_and_preserves_checkpoint,
         test_downstream_blocked_when_upstream_fails,
         test_timeout_marks_agent_failed_timeout,
         test_manual_mode_only_runs_selected_agent,

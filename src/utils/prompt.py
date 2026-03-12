@@ -77,11 +77,10 @@ Your tasks:
 2. MERGE it with existing requirements (don't overwrite unless correcting). When the user REMOVES or corrects something (e.g. "no user authentication", "remove X"), return the full corrected list for that field (e.g. key_features with auth removed) so the update is applied.
 3. Update progress based on completeness
 4. Identify any decisions or assumptions made
-5. If the user says they want you to "pick everything", "fill in the details", "fill in all other details", "fill in the rest", "you decide", "use defaults", or "just pick", also FILL IN sensible defaults for every missing or empty field based on what you know (e.g. project type). When you do this, set "pending_confirmation": true so the assistant will ask the user to confirm before proceeding (e.g. "I've assumed X, Y, Z. Does this work or would you like to change anything?").
 
-Return the UPDATED requirements state as JSON, preserving all existing information and adding new details. Include "pending_confirmation": true only when you just filled in defaults at the user's request.
+Return the UPDATED requirements state as JSON, preserving all existing information and adding new details.
 
-IMPORTANT: Only update fields that have new information (or fill in defaults when the user asked you to pick). Keep existing values intact otherwise.
+IMPORTANT: Only update fields that have new information. Keep existing values intact otherwise.
 """
 
 # Instructions for determining if requirements are complete
@@ -96,8 +95,6 @@ Assess completeness across these dimensions:
 - Key Features: Do we have at least 3-5 core features defined?
 - Technical Constraints: Do we know technical preferences/limitations?
 - Business Goals: Do we understand the "why" and timeline?
-
-If the requirements have "pending_confirmation": true, return is_complete: false so the user is asked to confirm the filled-in defaults before we proceed. Otherwise, if the requirements already have reasonable defaults filled in for the main fields, treat as complete (is_complete: true, completeness_score >= 0.85).
 
 Return JSON:
 {{
