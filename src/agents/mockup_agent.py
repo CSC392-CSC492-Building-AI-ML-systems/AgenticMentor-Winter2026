@@ -1,11 +1,18 @@
 import asyncio
+import logging
 from typing import Any, Dict, Optional
 from pathlib import Path
+
+from langchain_core.messages import HumanMessage
+
 from src.agents.base_agent import BaseAgent
 from src.models.mockup_contract import MockupAgentRequest, MockupAgentResponse, MockupStateEntry
 from src.models.wireframe_spec import WireframeSpec
 from src.tools.excalidraw_compiler import ExcalidrawCompiler
 from src.protocols.review_protocol import ReviewResult
+
+
+logger = logging.getLogger(__name__)
 
 class MockupAgent(BaseAgent):
     """Generates UI wireframes as Excalidraw scenes."""
@@ -33,18 +40,28 @@ class MockupAgent(BaseAgent):
         # Parse request
         request = MockupAgentRequest(**input_data)
         
-        # Generate wireframe spec via LLM
-        # print("  [1/3] Generating wireframe spec (LLM)...", flush=True)
+        # Generate wireframe spec via LLM (with fallback)
         wireframe_spec = await self._generate_wireframe_spec(request)
         
         # Compile to Excalidraw JSON
-        # print("  [2/3] Compiling to Excalidraw scene...", flush=True)
         excalidraw_json = self.compiler.compile(wireframe_spec)
         
         # Export artifacts and auto-preview
-        # print("  [3/3] Exporting artifacts...", flush=True)
         export_paths = await self._export_artifacts(excalidraw_json, wireframe_spec)
-        
+
+        # Build generation metadata
+        meta: Dict[str, Any] = {
+            "agent": self.name,
+            "version": "1.0",
+            "timestamp": self.compiler._timestamp(),
+        }
+        source = getattr(self, "_last_spec_source", None)
+        if source:
+            meta["source"] = source
+        fallback_reason = getattr(self, "_last_fallback_reason", None)
+        if fallback_reason:
+            meta["fallback_reason"] = fallback_reason
+
         # Build response
         response = MockupAgentResponse(
             wireframe_spec=wireframe_spec,
@@ -52,19 +69,20 @@ class MockupAgent(BaseAgent):
             export_paths=export_paths,
             summary=self._generate_summary(wireframe_spec),
             state_delta=self._build_state_delta(wireframe_spec, excalidraw_json, export_paths),
-            generation_metadata={
-                "agent": self.name,
-                "version": "1.0",
-                "timestamp": self.compiler._timestamp(),
-            }
+            generation_metadata=meta,
         )
         
         return response.model_dump()
     
     async def _generate_wireframe_spec(self, request: MockupAgentRequest) -> WireframeSpec:
         """Generate WireframeSpec via LLM structured output."""
-        
+        # Track where the spec came from so tests and callers can see
+        self._last_spec_source = "llm"
+        self._last_fallback_reason = None
+
         if self.llm_client is None:
+            self._last_spec_source = "default_spec"
+            self._last_fallback_reason = "no_llm"
             return self._default_wireframe_spec(request)
         
         # Build prompt
@@ -114,16 +132,18 @@ Focus on essential MVP screens only (3-5 screens typical).
         try:
             response = await self._invoke_llm(prompt)
             text = response.strip()
-            
+
             # Extract JSON from markdown code blocks if present
             text = self._extract_json_from_response(text)
-            
+
             # Parse and validate with Pydantic
             spec = WireframeSpec.model_validate_json(text)
             return spec
-        
+
         except Exception as e:
-            # print(f"  [mockup] LLM generation failed: {e}, using default spec", flush=True)
+            # Record fallback reason so we can surface why LLM path failed
+            self._last_spec_source = "default_spec"
+            self._last_fallback_reason = str(e) or type(e).__name__
             return self._default_wireframe_spec(request)
     
     def _default_wireframe_spec(self, request: MockupAgentRequest) -> WireframeSpec:
@@ -534,15 +554,23 @@ Focus on essential MVP screens only (3-5 screens typical).
         return text
     
     async def _invoke_llm(self, prompt: str) -> str:
-        """Invoke LLM client."""
+        """Invoke LLM client with timeout and logging on timeout."""
         async def _call():
-            if hasattr(self.llm_client, "generate"):
-                return await self.llm_client.generate(prompt)
             if hasattr(self.llm_client, "ainvoke"):
-                return await self.llm_client.ainvoke(prompt)
+                # Chat models expect a list of messages
+                return await self.llm_client.ainvoke([HumanMessage(content=prompt)])
+            if hasattr(self.llm_client, "generate"):
+                # Fallback for non-chat clients that accept raw prompts
+                return await self.llm_client.generate(prompt)
             return ""
 
-        response = await asyncio.wait_for(_call(), timeout=self._LLM_TIMEOUT_SECONDS)
+        timeout = getattr(self, "_LLM_TIMEOUT_SECONDS", 120)
+        try:
+            response = await asyncio.wait_for(_call(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Mockup LLM timed out after %s seconds", timeout)
+            raise
+
         if hasattr(response, "content"):
             return response.content
         if isinstance(response, str):

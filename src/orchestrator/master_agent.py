@@ -242,7 +242,27 @@ class MasterOrchestrator:
                 "next_step": None,
                 "awaiting_user_action": False,
             }
-        if not plan or not plan.tasks or not project_state:
+        if not project_state:
+            return {
+                "message": "No plan or state.",
+                "state_snapshot": None,
+                "artifacts": [],
+                "intent": intent,
+                "plan": plan,
+                "project_state": None,
+                "agent_results": [],
+                "available_agents": available_agents,
+                "current_step": None,
+                "next_step": None,
+                "awaiting_user_action": False,
+            }
+        # Recovery: empty plan but we have state and requirements — advance phase and rebuild plan so "continue" proceeds
+        if (not plan or not plan.tasks):
+            phase = getattr(project_state, "current_phase", "initialization")
+            if phase == "initialization" and self._state_has_artifact(project_state, "requirements"):
+                project_state = await self.state.update(session_id, {"current_phase": "requirements_complete"})
+                plan = self.execution_planner.plan(intent or {}, project_state)
+        if not plan or not plan.tasks:
             return {
                 "message": "No plan or state.",
                 "state_snapshot": project_state.model_dump() if project_state else None,
