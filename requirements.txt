@@ -25,6 +25,9 @@ sentence-transformers==2.7.0
 pydantic==2.12.5
 pydantic-settings==2.13.1
 
+# ── Database ──────────────────────────────────────────────────────────────────
+supabase==2.10.0
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dotenv==1.2.1
 tenacity==9.1.4

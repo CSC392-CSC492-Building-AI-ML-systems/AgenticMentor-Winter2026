@@ -249,6 +249,9 @@ async def test_after_requirements_step_state_updated_and_phase_advanced(
     assert req.get("is_complete") is True
     assert req.get("progress") == pytest.approx(0.9)
     assert snap.get("current_phase") == "requirements_complete"
+    assert resp.get("current_step", {}).get("agent_id") == "requirements_collector"
+    assert resp.get("next_step", {}).get("agent_id") == "project_architect"
+    assert resp.get("awaiting_user_action") is True
     assert "conversation_history" in snap
     assert len(snap["conversation_history"]) >= 2  # user + assistant
 
@@ -273,6 +276,8 @@ async def test_after_requirements_step_persisted_state_has_requirements(
     assert reloaded.requirements.budget == "$0"
     assert reloaded.requirements.is_complete is True
     assert reloaded.requirements.progress == pytest.approx(0.9)
+    assert reloaded.awaiting_user_action is True
+    assert reloaded.next_recommended_agent_id == "project_architect"
 
 
 # ----- 2. Two-step: requirements then architecture; state fed and updated -----
@@ -293,12 +298,12 @@ async def test_transition_requirements_then_architecture_state_fed_and_updated(
 
     r1 = await orch.process_request("I want to clarify our goals", session_id)
     assert r1.get("state_snapshot", {}).get("current_phase") == "requirements_complete"
+    assert r1.get("next_step", {}).get("agent_id") == "project_architect"
 
-    r2 = await orch.process_request("generate the architecture", session_id)
+    r2 = await orch.process_request("continue", session_id)
     assert r2.get("error") is None
     snap2 = r2.get("state_snapshot") or {}
-    # Plan may run architect + others (e.g. mockup), so phase can be architecture_complete or design_complete
-    assert snap2.get("current_phase") in ("architecture_complete", "design_complete", "planning_complete", "exportable")
+    assert snap2.get("current_phase") == "architecture_complete"
     assert "architecture" in snap2
     arch = snap2["architecture"]
     assert arch.get("tech_stack") or arch.get("system_diagram"), "architecture should have content"
@@ -328,13 +333,14 @@ async def test_transition_architecture_then_roadmap_state_fed_and_updated(
 
     r1 = await orch.process_request("generate the architecture", session_id)
     snap1 = r1.get("state_snapshot") or {}
-    assert snap1.get("current_phase") in ("architecture_complete", "design_complete", "planning_complete", "exportable")
+    assert snap1.get("current_phase") == "architecture_complete"
     assert snap1.get("architecture", {}).get("tech_stack")
+    assert r1.get("next_step", {}).get("agent_id") == "execution_planner"
 
-    r2 = await orch.process_request("give me a roadmap and milestones", session_id)
+    r2 = await orch.process_request("continue", session_id)
     assert r2.get("error") is None
     snap2 = r2.get("state_snapshot") or {}
-    assert snap2.get("current_phase") in ("planning_complete", "design_complete", "exportable")
+    assert snap2.get("current_phase") == "planning_complete"
     assert "roadmap" in snap2
     roadmap = snap2["roadmap"]
     assert roadmap.get("phases") or roadmap.get("milestones"), "roadmap should have content"

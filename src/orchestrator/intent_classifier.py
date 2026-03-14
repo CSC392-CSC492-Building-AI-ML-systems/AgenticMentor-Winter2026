@@ -18,7 +18,7 @@ INTENT_PATTERNS = {
         "triggers": ["diagram", "structure", "how does"]
     },
     "mockup_creation": {
-        "keywords": ["ui", "screen", "flow", "wireframe", "design"],
+        "keywords": ["ui", "screen", "flow", "wireframe", "design", "mockup", "mockups", "prototype"],
         "phase_compatibility": ["requirements_complete", "architecture_complete", "planning_complete", "design_complete"],
         "triggers": ["looks like", "user journey"]
     },
@@ -54,7 +54,7 @@ class IntentResult(TypedDict, total=False):
 
 class IntentResultModel(BaseModel):
     """Pydantic model for LangChain structured output (intent classification)."""
-    primary_intent: str = Field(description="One of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, or unknown")
+    primary_intent: str = Field(description="One of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, general_inquiry, or unknown")
     requires_agents: list[str] = Field(description="List of agent ids that should handle this request. Use ONE agent for narrow requests ('only tech stack'). Use MULTIPLE when user asks for several things (e.g. tech stack and roadmap -> project_architect, execution_planner).")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0.0 to 1.0")
     expand_downstream: bool = Field(default=True, description="If True, system will also run downstream agents (e.g. architect -> planner -> mockup). Set to False when user asks for ONLY a specific output (e.g. 'only update the tech stack', 'just the architecture').")
@@ -84,9 +84,10 @@ Rules (apply in order):
 3. Narrow request → one agent, no downstream. "Just the tech stack", "only an ERD", "give me a pdf", "only update architecture" → requires_agents = only that agent, expand_downstream=false.
 4. Multiple asks → multiple agents. "Tech stack and roadmap", "architecture and wireframes" → requires_agents = both agent ids, expand_downstream=true unless they said "only" or "just".
 5. General/content request → one or more agents, expand_downstream=true. "Give me a diagram", "what's the tech stack", "show me wireframes" (no file format) → pick the right agent(s); downstream expansion is fine.
-6. Unclear or chit-chat → primary_intent="unknown", requires_agents=[], confidence low.
+6. Project status/progress question → primary_intent="general_inquiry", requires_agents=[], confidence medium-high. Use this when the user asks about what has been done, where we are in the process, what decisions were made, a summary of the project, or any question the orchestrator can answer from project state alone — WITHOUT needing to run an agent. Examples: "how is the project going?", "what have we decided so far?", "summarize what we've done", "what phase are we in?", "remind me what features we picked".
+7. True chit-chat with no project relevance → primary_intent="unknown", requires_agents=[], confidence low. Only use unknown when the message has nothing to do with the project at all.
 
-Output: primary_intent (one of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, unknown), requires_agents (list of agent ids above), confidence (0.0-1.0), expand_downstream (bool)."""
+Output: primary_intent (one of: requirements_gathering, architecture_design, mockup_creation, execution_planning, export, general_inquiry, unknown), requires_agents (list of agent ids above), confidence (0.0-1.0), expand_downstream (bool)."""
 
 
 # When the current message clearly asks for a file/export, prefer export (avoids tie with mockup from context).
@@ -164,16 +165,16 @@ class IntentClassifier:
         conversation_history: list[dict] | None = None,
     ) -> IntentResult:
         """Rule-based classification using INTENT_PATTERNS, phase, and optional conversation context."""
-        text = _conversation_context_for_rules(conversation_history, user_input)
-        if not text or not (user_input or "").strip():
+        current_text = (user_input or "").lower().strip()
+        history_text = _conversation_context_for_rules(conversation_history, "")
+        if not current_text:
             return IntentResult(
                 primary_intent="unknown",
                 requires_agents=[],
                 confidence=0.0,
             )
 
-        best_intent: str | None = None
-        best_score = 0
+        scored_intents: list[tuple[str, int, int]] = []
 
         for intent_name, pattern in INTENT_PATTERNS.items():
             phases = pattern.get("phase_compatibility") or []
@@ -181,12 +182,35 @@ class IntentClassifier:
                 continue
             keywords = pattern.get("keywords") or []
             triggers = pattern.get("triggers") or []
-            score = sum(1 for k in keywords + triggers if k in text)
+            score_current = sum(1 for k in keywords + triggers if k in current_text)
+            score_history = sum(1 for k in keywords + triggers if k in history_text)
+            scored_intents.append((intent_name, score_current, score_history))
+
+        any_current_match = any(score_current > 0 for _, score_current, _ in scored_intents)
+        best_intent: str | None = None
+        best_score = 0
+        best_current_score = 0
+        for intent_name, score_current, score_history in scored_intents:
+            score = score_current if any_current_match else score_history
             if score > best_score:
                 best_score = score
                 best_intent = intent_name
+                best_current_score = score_current
 
         if best_intent is None:
+            # Check for general project-status/progress questions before falling back to unknown.
+            general_inquiry_keywords = [
+                "progress", "status", "so far", "what have we", "what did we",
+                "where are we", "summary", "summarize", "remind me", "what's been done",
+                "what has been done", "what phase", "how is the project", "what decisions",
+                "what features", "what we decided", "overview", "recap",
+            ]
+            if any(kw in current_text for kw in general_inquiry_keywords):
+                return IntentResult(
+                    primary_intent="general_inquiry",
+                    requires_agents=[],
+                    confidence=0.7,
+                )
             return IntentResult(
                 primary_intent="unknown",
                 requires_agents=[],
@@ -194,7 +218,7 @@ class IntentClassifier:
             )
 
         agents = INTENT_TO_AGENTS.get(best_intent, [])
-        confidence = min(1.0, 0.3 + 0.2 * best_score)
+        confidence = min(1.0, 0.3 + 0.2 * (best_current_score if best_current_score > 0 else best_score))
         return IntentResult(
             primary_intent=best_intent,
             requires_agents=list(agents),

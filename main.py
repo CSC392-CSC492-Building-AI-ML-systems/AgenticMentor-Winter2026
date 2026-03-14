@@ -1,8 +1,14 @@
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 import uuid
 from datetime import datetime
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# CRITICAL: Load .env before importing project modules so the adapter 
+# sees the credentials during its initialization phase.
+load_dotenv()
 
 from src.protocols.schemas import (
     ProjectCreate,
@@ -34,6 +40,17 @@ from src.auth.firebase_auth import (
 # Module-level singletons initialised in lifespan
 state_manager: StateManager | None = None
 orchestrator: MasterOrchestrator | None = None
+from src.utils.config import settings
+
+# Import the StateManager and MasterOrchestrator for Phase 4
+from src.state.persistence import get_default_adapter
+from src.state.state_manager import StateManager
+from src.orchestrator.master_agent import MasterOrchestrator
+
+# Initialize the adapter, state manager, and orchestrator in the correct order
+db_adapter = get_default_adapter()
+state_manager = StateManager(db_adapter)
+orchestrator = MasterOrchestrator(state_manager)
 
 
 @asynccontextmanager
@@ -49,8 +66,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AgenticMentor API",
-    description="AI-powered multi-agent project planning system",
-    version="0.2.0",
+    description="AI-powered multi-agent project generation system",
+    version="0.1.0",
     lifespan=lifespan,
 )
 
@@ -290,8 +307,8 @@ async def get_requirements(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
-        host=settings.api_host,
-        port=settings.api_port,
-        reload=settings.api_debug,
+        "main:app", 
+        host=settings.api_host, 
+        port=settings.api_port, 
+        reload=settings.api_debug
     )
