@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from enum import Enum
 from typing import Literal
 
@@ -53,6 +53,7 @@ class RequirementsState(BaseModel):
     budget: Optional[str] = None
     is_complete: bool = False
     progress: float = 0.0  # 0.0 to 1.0
+    pending_confirmation: bool = False  # True when we filled defaults; ask user to confirm before proceeding
     
     class Config:
         json_schema_extra = {
@@ -96,6 +97,33 @@ class ProjectResponse(BaseModel):
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     message: str = Field(..., min_length=1)
+    agent_selection_mode: str = "auto"          # "auto" | "manual"
+    selected_agent_id: Optional[str] = None     # required when mode is "manual"
+
+
+class AgentResult(BaseModel):
+    """Result from a single agent execution."""
+    agent_id: str
+    agent_name: str
+    status: str  # "success" | "failed_timeout" | "failed_runtime" | "skipped_unavailable" | "blocked_dependency"
+    content: str = ""
+    state_delta_keys: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    blocked_by: Optional[List[str]] = None
+
+
+class AvailableAgent(BaseModel):
+    """Agent availability entry returned to the UI agent picker."""
+    agent_id: str
+    agent_name: str
+    description: str = ""
+    interaction_mode: str = "functional"
+    is_phase_compatible: bool
+    unmet_requires: List[str] = Field(default_factory=list)
+    blocked_by: List[str] = Field(default_factory=list)
+    is_available: bool
+    expensive: bool = False
+    supports_selective_regen: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -103,21 +131,58 @@ class ChatResponse(BaseModel):
     message: str
     state: Dict[str, Any]
     artifacts: Dict[str, Any]
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "message": "What type of application are you building?",
-                "state": {
-                    "requirements": {
-                        "is_complete": False,
-                        "progress": 0.1
-                    }
-                },
-                "artifacts": {
-                    "decisions": [],
-                    "assumptions": []
-                }
-            }
-        }
-    
+    agent_results: List[AgentResult] = Field(default_factory=list)
+    available_agents: List[AvailableAgent] = Field(default_factory=list)
+    current_phase: str = "initialization"
+
+
+class ProjectStateResponse(BaseModel):
+    """Full project state returned to the frontend (GET /projects/{id})."""
+    project_id: str
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+    last_updated: datetime
+    current_phase: str = "initialization"
+    requirements: Dict[str, Any] = Field(default_factory=dict)
+    architecture: Dict[str, Any] = Field(default_factory=dict)
+    roadmap: Dict[str, Any] = Field(default_factory=dict)
+    mockups: List[Dict[str, Any]] = Field(default_factory=list)
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    available_agents: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class FirebaseUser(BaseModel):
+    """Representation of an authenticated Firebase user."""
+    uid: str
+    email: Optional[EmailStr] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    provider_id: Optional[str] = None
+    claims: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EmailPasswordSignUpRequest(BaseModel):
+    """Request body for signing up with email/password."""
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class EmailPasswordLoginRequest(BaseModel):
+    """Request body for logging in with email/password."""
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class TokenVerificationRequest(BaseModel):
+    """Request body for verifying an existing Firebase ID token."""
+    id_token: str = Field(min_length=10)
+
+
+class TokenResponse(BaseModel):
+    """Standardised response for authentication tokens returned by Firebase REST API."""
+    id_token: str
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
+    user_id: Optional[str] = None
+    email: Optional[EmailStr] = None

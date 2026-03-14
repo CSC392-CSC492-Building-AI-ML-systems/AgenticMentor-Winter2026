@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -140,9 +141,9 @@ class ProjectArchitectAgent(BaseAgent):
             )
 
         # Run the LangGraph workflow
-        print("  [1/4] Analyzing impact and generating tech stack...", flush=True)
+        # print("  [1/4] Analyzing impact and generating tech stack...", flush=True)
         final_state = await self._graph.ainvoke(initial_state)
-        print("  [4/4] Building architecture output...", flush=True)
+        # print("  [4/4] Building architecture output...", flush=True)
 
         # Build ArchitectureDefinition from final state
         architecture = ArchitectureDefinition(
@@ -310,7 +311,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             return {"system_diagram": existing.get("system_diagram")}
 
         # Generate new system diagram
-        print("  [2/4] Generating system diagram (LLM)...", flush=True)
+        # print("  [2/4] Generating system diagram (LLM)...", flush=True)
         diagram = await self._generate_mermaid_diagram(
             diagram_kind="system",
             requirements_text=state.get("requirements_text", ""),
@@ -330,7 +331,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
             return {"data_schema": existing.get("data_schema")}
 
         # Generate new ERD
-        print("  [3/4] Generating ERD diagram (LLM)...", flush=True)
+        # print("  [3/4] Generating ERD diagram (LLM)...", flush=True)
         diagram = await self._generate_mermaid_diagram(
             diagram_kind="erd",
             requirements_text=state.get("requirements_text", ""),
@@ -490,7 +491,8 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         # Fetch RAG snippets for better diagram generation
         rag_snippets = self._get_mermaid_rag_snippets(diagram_kind)
         if rag_snippets:
-            print(f"  [diagram] Using mermaid RAG snippets for {diagram_kind} ({len(rag_snippets)} chars)", flush=True)
+            # print(f"  [diagram] Using mermaid RAG snippets for {diagram_kind} ({len(rag_snippets)} chars)", flush=True)
+            pass
         rag_block = (
             f"Relevant Mermaid syntax (from docs):\n{rag_snippets}\n\n"
             if rag_snippets else ""
@@ -530,7 +532,7 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
         last_parse_error = ""
         for attempt in range(max_diagram_attempts):
             if attempt > 0:
-                print(f"  [diagram] Retry {attempt + 1}/{max_diagram_attempts} for {diagram_kind} (validation failed)...", flush=True)
+                # print(f"  [diagram] Retry {attempt + 1}/{max_diagram_attempts} for {diagram_kind} (validation failed)...", flush=True)
                 # Query RAG with the error message to get error-relevant syntax chunks
                 retry_rag = ""
                 if last_parse_error:
@@ -538,7 +540,8 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
                         diagram_kind, max_chars=1000, query_override=last_parse_error
                     )
                     if retry_rag:
-                        print(f"  [diagram] Using error-based RAG for retry ({len(retry_rag)} chars)", flush=True)
+                        # print(f"  [diagram] Using error-based RAG for retry ({len(retry_rag)} chars)", flush=True)
+                        pass
                 retry_rag_block = (
                     f"Relevant Mermaid syntax (for this error):\n{retry_rag}\n\n"
                     if retry_rag else ""
@@ -579,7 +582,8 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
                     continue
                 # Compile with mmdc and get real parse errors for retry
                 if attempt == 0:
-                    print(f"  [diagram] Validating {diagram_kind} (mmdc)...", flush=True)
+                    # print(f"  [diagram] Validating {diagram_kind} (mmdc)...", flush=True)
+                    pass
                 valid, parse_error = validate_mermaid(mermaid)
                 if valid:
                     return mermaid
@@ -590,15 +594,19 @@ Return artifacts_to_regenerate (list), reasoning (string), and preserve_artifact
 
         return fallback_diagram
 
+    # Timeout for each LLM call so we don't hang indefinitely on slow/stuck API
+    _LLM_TIMEOUT_SECONDS = 120
+
     async def _invoke_llm(self, prompt: str) -> str:
-        """Invoke LLM with various client interfaces."""
-        if hasattr(self.llm_client, "generate"):
-            response = await self.llm_client.generate(prompt)
-        elif hasattr(self.llm_client, "ainvoke"):
-            response = await self.llm_client.ainvoke(prompt)
-        else:
+        """Invoke LLM with various client interfaces. Raises asyncio.TimeoutError after _LLM_TIMEOUT_SECONDS."""
+        async def _call():
+            if hasattr(self.llm_client, "generate"):
+                return await self.llm_client.generate(prompt)
+            if hasattr(self.llm_client, "ainvoke"):
+                return await self.llm_client.ainvoke(prompt)
             return ""
-        
+
+        response = await asyncio.wait_for(_call(), timeout=self._LLM_TIMEOUT_SECONDS)
         return response if isinstance(response, str) else str(response)
 
     # ========================================================================

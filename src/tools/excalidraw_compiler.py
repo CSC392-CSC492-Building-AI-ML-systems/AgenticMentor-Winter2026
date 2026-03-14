@@ -371,11 +371,23 @@ class ExcalidrawCompiler:
         
         return elements
     
+    def _coerce_int(self, value: Any, default: int) -> int:
+        """Coerce metadata value to int (LLM may return string from JSON)."""
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def render_card_grid(self, comp: ComponentSpec, x: float, y: float, w: float, h: float):
         """Render card grid — caps card count based on available height to prevent overflow."""
         elements = []
         
-        card_count = comp.metadata.get("card_count", 3) if comp.metadata else 3
+        raw_card = comp.metadata.get("card_count", 3) if comp.metadata else 3
+        card_count = self._coerce_int(raw_card, 3)
         cards_per_row = 3
         card_margin = 24
         card_width = (w - (cards_per_row + 1) * card_margin) / cards_per_row
@@ -437,7 +449,8 @@ class ExcalidrawCompiler:
         """Render button group (simple sketch style)."""
         elements = []
         
-        button_count = comp.metadata.get("button_count", 2) if comp.metadata else 2
+        raw_btn = comp.metadata.get("button_count", 2) if comp.metadata else 2
+        button_count = self._coerce_int(raw_btn, 2)
         button_width = 160
         button_height = 48
         button_margin = 20

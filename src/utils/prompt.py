@@ -74,13 +74,13 @@ User's Response:
 
 Your tasks:
 1. Extract any NEW information from the user's response
-2. MERGE it with existing requirements (don't overwrite unless correcting)
+2. MERGE it with existing requirements (don't overwrite unless correcting). When the user REMOVES or corrects something (e.g. "no user authentication", "remove X"), return the full corrected list for that field (e.g. key_features with auth removed) so the update is applied.
 3. Update progress based on completeness
 4. Identify any decisions or assumptions made
 
 Return the UPDATED requirements state as JSON, preserving all existing information and adding new details.
 
-IMPORTANT: Only update fields that have new information. Keep existing values intact.
+IMPORTANT: Only update fields that have new information. Keep existing values intact otherwise.
 """
 
 # Instructions for determining if requirements are complete

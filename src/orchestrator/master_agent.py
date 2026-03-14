@@ -1,95 +1,1058 @@
-#Psuedocode
+"""Master orchestrator: LangGraph flow (load → classify → build_plan) with optional LangChain LLM intent."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+from src.orchestrator.agent_registry import AgentRegistry
+from src.orchestrator.agent_store import AGENT_STORE, get_agent_by_id, get_producer_for_artifact
+from src.orchestrator.execution_plan import ExecutionPlan, Task
+from src.orchestrator.execution_planner import ExecutionPlanner
+from src.orchestrator.graph import build_orchestrator_graph
+from src.orchestrator.intent_classifier import IntentClassifier
+from src.utils.prompt import format_conversation_history
+
+# Maps agent_id → the phase that becomes active after that agent completes.
+PHASE_TRANSITION_MAP: dict[str, str] = {
+    "requirements_collector": "requirements_complete",
+    "project_architect": "architecture_complete",
+    "execution_planner": "planning_complete",
+    "mockup_agent": "design_complete",
+    "exporter": "exportable",
+}
+
+AGENT_TIMEOUT_SECONDS: dict[str, float] = {
+    "requirements_collector": 45.0,
+    "project_architect": 150.0,
+    "execution_planner": 90.0,
+    "mockup_agent": 150.0,
+    "exporter": 90.0,
+}
+
+CONTINUE_PHRASES = (
+    "continue",
+    "continue please",
+    "continue to the next step",
+    "go to the next step",
+    "move on",
+    "proceed",
+    "next",
+    "next step",
+    "looks good continue",
+    "this looks good continue",
+    "approved continue",
+)
+
+AUTO_FLOW_SEQUENCE = (
+    "requirements_collector",
+    "project_architect",
+    "execution_planner",
+    "mockup_agent",
+    "exporter",
+)
+
+
+def _make_llm_if_configured() -> Any:
+    """Build a LangChain ChatGoogleGenerativeAI if Gemini API key is set; else None."""
+    try:
+        from src.utils.config import get_settings
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        s = get_settings()
+        if getattr(s, "gemini_api_key", None):
+            return ChatGoogleGenerativeAI(
+                model=getattr(s, "model_name", "gemini-2.5-flash"),
+                temperature=getattr(s, "model_temperature", 0.2),
+                api_key=s.gemini_api_key,
+            )
+    except Exception:
+        pass
+    return None
+
 
 class MasterOrchestrator:
-    def __init__(self, state_manager, agent_registry):
+    """Orchestrator using LangGraph (load_state → classify_intent → build_plan) and optional LangChain LLM for intent."""
+
+    def __init__(self, state_manager: Any, agent_registry: Any = None, *, use_llm: bool = True):
         self.state = state_manager
-        self.agents = agent_registry
-        self.intent_classifier = IntentClassifier()
-    
-    async def process_request(self, user_input: str, session_id: str):
-        """
-        Main orchestration loop
-        """
-        # STEP 1: Load current project state
-        project_state = await self.state.load(session_id)
-        
-        # STEP 2: Classify user intent
-        intent = self.intent_classifier.analyze(
-            user_input, 
-            project_state.current_phase
+        self.registry = agent_registry if agent_registry is not None else AgentRegistry(state_manager)
+        llm = _make_llm_if_configured() if use_llm else None
+        self._summary_llm = llm
+        self.intent_classifier = IntentClassifier(llm=llm)
+        self.execution_planner = ExecutionPlanner()
+        self._graph = build_orchestrator_graph(
+            state_manager=self.state,
+            intent_classifier=self.intent_classifier,
+            execution_planner=self.execution_planner,
         )
-        # Returns: {
-        #   "primary_intent": "requirements_gathering",
-        #   "requires_agents": ["requirements_collector"],
-        #   "context_fragments": ["project_goals", "constraints"],
-        #   "confidence": 0.92
-        # }
-        
-        # STEP 3: Route to agent(s)
-        execution_plan = self._build_execution_plan(intent, project_state)
-        
-        # STEP 4: Execute agents sequentially or in parallel
-        results = []
-        for agent_task in execution_plan.tasks:
-            agent = self.agents.get(agent_task.agent_name)
-            
-            # Extract only relevant state fragments (token optimization)
-            context = self._extract_context(
-                project_state, 
-                agent_task.required_context
-            )
-            
-            # Execute agent with inline review
-            output = await agent.execute(
-                input=agent_task.prompt,
-                context=context,
-                tools=agent_task.tools
-            )
-            
-            # Update shared state
-            await self.state.update(session_id, output.state_delta)
-            results.append(output)
-        
-        # STEP 5: Synthesize response
-        response = self._synthesize_response(results)
-        
-        return response
-    
-    def _build_execution_plan(self, intent, state):
+
+    async def process_request(
+        self,
+        user_input: str,
+        session_id: str,
+        *,
+        agent_selection_mode: str = "auto",
+        selected_agent_id: str | None = None,
+    ) -> dict:
         """
-        Decision tree for multi-agent coordination
+        Load state, classify intent (auto) or use selected agent (manual),
+        build plan, run each task, synthesize, return response.
+
+        Args:
+            user_input: Raw user message.
+            session_id: Session identifier.
+            agent_selection_mode: "auto" (default) or "manual".
+            selected_agent_id: Required when mode is "manual"; the agent to run.
         """
-        plan = ExecutionPlan()
-        
-        if intent.primary_intent == "requirements_gathering":
-            plan.add_task(
-                agent="requirements_collector",
-                prompt=getattr(intent, "user_input", None) or intent.get("user_input"),
-                required_context=["existing_requirements"],
-                tools=["question_generator", "gap_analyzer"]
+        initial = {"user_input": user_input or "", "session_id": session_id or ""}
+        available_agents: list[dict] = []
+        project_state = None
+
+        # --- 3.4 Manual mode: bypass graph, build plan directly ---
+        if agent_selection_mode == "manual" and selected_agent_id:
+            project_state = await self.state.load(session_id)
+            if project_state is None:
+                return {"message": "Session not found.", "state_snapshot": None, "artifacts": [], "intent": None, "plan": None, "project_state": None, "agent_results": [], "available_agents": []}
+            available_agents = self._get_available_agents(project_state)
+            selected_entry = get_agent_by_id(selected_agent_id)
+            if selected_entry is None:
+                return {
+                    "message": f"Unknown agent: {selected_agent_id}",
+                    "state_snapshot": project_state.model_dump() if hasattr(project_state, "model_dump") else None,
+                    "artifacts": [],
+                    "intent": {"primary_intent": "manual", "requires_agents": [], "confidence": 0.0},
+                    "plan": None,
+                    "project_state": project_state,
+                    "agent_results": [],
+                    "available_agents": available_agents,
+                }
+            selected_availability = next(
+                (item for item in available_agents if item.get("agent_id") == selected_agent_id),
+                None,
             )
-        
-        elif intent.primary_intent == "architecture_design":
-            # Parallel execution example
-            plan.add_parallel_tasks([
-                Task(
-                    agent_name="project_architect",
-                    required_context=["requirements", "architecture.tech_stack"],
-                    tools=["generate_mermaid", "query_vector_store"]
-                ),
-                Task(
-                    agent_name="mockup_agent",
-                    required_context=["requirements.ui_specs"],
-                    tools=["ui_wireframe"]
+            if selected_availability and not selected_availability.get("is_available", False):
+                reason_parts = []
+                if not selected_availability.get("is_phase_compatible", True):
+                    reason_parts.append(
+                        f"not allowed in phase '{getattr(project_state, 'current_phase', 'initialization')}'"
+                    )
+                unmet = selected_availability.get("unmet_requires") or []
+                if unmet:
+                    reason_parts.append(f"missing required context: {', '.join(unmet)}")
+                reason = "; ".join(reason_parts) if reason_parts else "not available right now"
+                return {
+                    "message": f"Agent '{selected_agent_id}' is unavailable: {reason}.",
+                    "state_snapshot": project_state.model_dump() if hasattr(project_state, "model_dump") else None,
+                    "artifacts": [],
+                    "intent": {"primary_intent": "manual", "requires_agents": [selected_agent_id], "confidence": 1.0},
+                    "plan": None,
+                    "project_state": project_state,
+                    "agent_results": [],
+                    "available_agents": available_agents,
+                }
+            from src.orchestrator.execution_planner import _resolve_upstream
+
+            resolved_ids = _resolve_upstream([selected_agent_id], project_state)
+            plan = ExecutionPlan()
+            for aid in resolved_ids:
+                entry = get_agent_by_id(aid)
+                plan.add_task(agent_id=aid, required_context=(entry or {}).get("requires") or [])
+            intent = {"primary_intent": "manual", "requires_agents": [selected_agent_id], "confidence": 1.0}
+            # Persist mode selection
+            project_state = await self.state.update(
+                session_id,
+                {
+                    "agent_selection_mode": "manual",
+                    "selected_agent_id": selected_agent_id,
+                    "awaiting_user_action": False,
+                    "next_recommended_agent_id": None,
+                    "last_auto_plan_agent_ids": [],
+                },
+            )
+            graph_result = {"plan": plan, "project_state": project_state, "intent": intent, "error": None}
+        else:
+            project_state = await self.state.load(session_id)
+            if project_state and self._is_explicit_continue(user_input, project_state):
+                next_agent_id = getattr(project_state, "next_recommended_agent_id", None)
+                entry = get_agent_by_id(next_agent_id) or {}
+                plan = ExecutionPlan()
+                plan.add_task(
+                    agent_id=next_agent_id,
+                    required_context=list(entry.get("requires") or []),
                 )
-            ])
-        
-        elif intent.primary_intent == "export":
-            plan.add_task(
-                agent="exporter",
-                prompt=getattr(intent, "user_input", None) or (intent.get("user_input") if isinstance(intent, dict) else None),
-                required_context=["*"],  # Full state
-                tools=["markdown_formatter", "pdf_exporter"]
+                graph_result = {
+                    "plan": plan,
+                    "project_state": project_state,
+                    "intent": {
+                        "primary_intent": "workflow_continue",
+                        "requires_agents": [next_agent_id],
+                        "confidence": 1.0,
+                        "expand_downstream": False,
+                    },
+                    "error": None,
+                }
+            else:
+                graph_result = await self._graph.ainvoke(initial)
+                project_state = graph_result.get("project_state")
+            available_agents = self._get_available_agents(project_state) if project_state else []
+        error = graph_result.get("error")
+        if error:
+            return {
+                "message": f"Error: {error}",
+                "state_snapshot": None,
+                "artifacts": [],
+                "intent": None,
+                "plan": graph_result.get("plan"),
+                "project_state": None,
+                "agent_results": [],
+                "available_agents": available_agents if agent_selection_mode == "manual" else [],
+            }
+        plan = graph_result.get("plan")
+        project_state = graph_result.get("project_state")
+        intent = graph_result.get("intent")
+        # General inquiry (unknown intent): answer from context, no agent run.
+        if (
+            agent_selection_mode == "auto"
+            and intent
+            and (intent.get("primary_intent") or "").strip() in ("unknown", "general_inquiry")
+            and project_state is not None
+        ):
+            conversation_history = list(getattr(project_state, "conversation_history", None) or [])
+            message = await self._general_inquiry_message(project_state, user_input or "", conversation_history)
+            new_history = list(getattr(project_state, "conversation_history", None) or [])
+            new_history.append({"role": "user", "content": user_input or ""})
+            new_history.append({"role": "assistant", "content": message})
+            project_state.conversation_history = new_history
+            if hasattr(self.state, "db") and hasattr(self.state.db, "save"):
+                await self.state.db.save(session_id, project_state.model_dump())
+            if hasattr(self.state, "cache"):
+                self.state.cache[session_id] = project_state
+            available_agents = self._get_available_agents(project_state)
+            return {
+                "message": message,
+                "state_snapshot": project_state.model_dump() if hasattr(project_state, "model_dump") else None,
+                "artifacts": [],
+                "intent": intent,
+                "plan": plan,
+                "project_state": project_state,
+                "agent_results": [],
+                "available_agents": available_agents,
+                "current_step": None,
+                "next_step": None,
+                "awaiting_user_action": False,
+            }
+        if not project_state:
+            return {
+                "message": "No plan or state.",
+                "state_snapshot": None,
+                "artifacts": [],
+                "intent": intent,
+                "plan": plan,
+                "project_state": None,
+                "agent_results": [],
+                "available_agents": available_agents,
+                "current_step": None,
+                "next_step": None,
+                "awaiting_user_action": False,
+            }
+        # Recovery: empty plan but we have state and requirements — advance phase and rebuild plan so "continue" proceeds
+        if (not plan or not plan.tasks):
+            phase = getattr(project_state, "current_phase", "initialization")
+            if phase == "initialization" and self._state_has_artifact(project_state, "requirements"):
+                project_state = await self.state.update(session_id, {"current_phase": "requirements_complete"})
+                plan = self.execution_planner.plan(intent or {}, project_state)
+        if not plan or not plan.tasks:
+            return {
+                "message": "No plan or state.",
+                "state_snapshot": project_state.model_dump() if project_state else None,
+                "artifacts": [],
+                "intent": intent,
+                "plan": plan,
+                "project_state": project_state,
+                "agent_results": [],
+                "available_agents": available_agents,
+                "current_step": None,
+                "next_step": None,
+                "awaiting_user_action": False,
+            }
+        planned_tasks = list(plan.tasks)
+        tasks_to_run = planned_tasks if agent_selection_mode == "manual" else planned_tasks[:1]
+        results = []
+        agent_results = []
+        blocked_artifacts: set[str] = set()
+        for task in tasks_to_run:
+            if self._is_blocked_by_dependency(task.required_context, blocked_artifacts):
+                entry = get_agent_by_id(task.agent_id)
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "blocked_dependency",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "blocked_by": sorted(blocked_artifacts),
+                })
+                continue
+            agent = self.registry.get_agent(task.agent_id) if hasattr(self.registry, "get_agent") else None
+            if agent is None:
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                entry = get_agent_by_id(task.agent_id)
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "skipped_unavailable",
+                    "content": "",
+                    "state_delta_keys": [],
+                })
+                continue
+            context = self._extract_context(project_state, task.required_context)
+            entry = get_agent_by_id(task.agent_id)
+            try:
+                timeout_seconds = AGENT_TIMEOUT_SECONDS.get(task.agent_id, 120.0)
+                result = await asyncio.wait_for(
+                    self._run_agent(task, context, user_input or "", agent, project_state=project_state),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "failed_timeout",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "error": f"Timed out after {timeout_seconds:.0f}s",
+                })
+                continue
+            except Exception as exc:
+                print(f"[orchestrator] agent '{task.agent_id}' failed: {type(exc).__name__}: {exc}", flush=True)
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "failed_runtime",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            if not result:
+                blocked_artifacts.update(self._produced_artifacts(task.agent_id))
+                agent_results.append({
+                    "agent_id": task.agent_id,
+                    "agent_name": (entry or {}).get("name", task.agent_id),
+                    "status": "failed_runtime",
+                    "content": "",
+                    "state_delta_keys": [],
+                    "error": "Agent returned no result",
+                })
+                continue
+            state_delta = result.get("state_delta") or {}
+            if state_delta:
+                project_state = await self.state.update(session_id, state_delta)
+            # 3.2 Phase transition: update current_phase after agent completes.
+            next_phase = PHASE_TRANSITION_MAP.get(task.agent_id)
+            should_advance_phase = bool(next_phase)
+            if task.agent_id == "requirements_collector":
+                should_advance_phase = bool(next_phase) and self._requirements_ready_for_handoff(project_state)
+            if should_advance_phase:
+                project_state = await self.state.update(session_id, {"current_phase": next_phase})
+            results.append(result)
+            agent_results.append({
+                "agent_id": task.agent_id,
+                "agent_name": (entry or {}).get("name", task.agent_id),
+                "status": "success",
+                "content": result.get("content") or "",
+                "state_delta_keys": list(state_delta.keys()),
+            })
+        current_step = None
+        next_step = None
+        if agent_selection_mode == "auto" and tasks_to_run:
+            executed = agent_results[0] if agent_results else None
+            remaining_plan = planned_tasks[1:]
+            if executed and executed.get("status") == "success":
+                next_agent_id = self._resolve_next_auto_agent_id(
+                    executed.get("agent_id"),
+                    project_state,
+                    remaining_plan,
+                )
+                project_state = await self.state.update(
+                    session_id,
+                    {
+                        "agent_selection_mode": "auto",
+                        "selected_agent_id": None,
+                        "awaiting_user_action": bool(next_agent_id),
+                        "last_completed_agent_id": executed.get("agent_id"),
+                        "next_recommended_agent_id": next_agent_id,
+                        "last_auto_plan_agent_ids": [task.agent_id for task in planned_tasks],
+                    },
+                )
+                summary_text, summary_source = await self._summarize_single_step(
+                    executed,
+                    project_state,
+                    results[0] if results else {},
+                    next_agent_id,
+                )
+                phase_after = getattr(project_state, "current_phase", None)
+                current_step = {
+                    "agent_id": executed.get("agent_id"),
+                    "agent_name": executed.get("agent_name"),
+                    "status": executed.get("status"),
+                    "phase_after": phase_after,
+                    "summary": summary_text,
+                    "summary_source": summary_source,
+                    "deliverable_keys": list(executed.get("state_delta_keys") or []),
+                    "is_checkpoint": True,
+                }
+                if next_agent_id:
+                    next_entry = get_agent_by_id(next_agent_id) or {}
+                    next_step = {
+                        "agent_id": next_agent_id,
+                        "agent_name": next_entry.get("name", next_agent_id),
+                        "user_prompt": self._build_next_step_prompt(
+                            executed.get("agent_id"),
+                            next_agent_id,
+                        ),
+                    }
+                # Decide what the user sees for this step.
+                agent_id = executed.get("agent_id") or ""
+                # For execution_planner, prefer the orchestrator summary so we can describe the actual roadmap
+                # (phases, milestones, tasks) based on state rather than the agent's terse counts.
+                if agent_id == "execution_planner":
+                    message = summary_text
+                else:
+                    # Prefer agent's actual content when present (conversational always; functional when substantive).
+                    agent_content = (executed.get("content") or "").strip()
+                    entry = get_agent_by_id(agent_id)
+                    is_conversational = (entry or {}).get("interaction_mode") == "conversational"
+                    use_agent_content = (
+                        (is_conversational and agent_content)
+                        or (not is_conversational and agent_content and len(agent_content) >= 80)
+                    )
+                    if use_agent_content:
+                        message = agent_content
+                        if next_agent_id:
+                            message = f"{message}\n\nWhen you're ready, say **continue** to move to the next step."
+                    else:
+                        message = summary_text
+            else:
+                project_state = await self.state.update(
+                    session_id,
+                    {
+                        "agent_selection_mode": "auto",
+                        "selected_agent_id": None,
+                        "awaiting_user_action": False,
+                        "next_recommended_agent_id": None,
+                        "last_auto_plan_agent_ids": [task.agent_id for task in planned_tasks],
+                    },
+                )
+                message = self._synthesize_response(results, agent_results)
+        else:
+            project_state = await self.state.update(
+                session_id,
+                {
+                    "awaiting_user_action": False,
+                    "next_recommended_agent_id": None,
+                    "last_auto_plan_agent_ids": [],
+                },
             )
-        
-        return plan
+            message = self._synthesize_response(results, agent_results)
+        issue_summary = self._summarize_agent_issues(agent_results)
+        if issue_summary:
+            message = f"{message} Issues: {issue_summary}" if results else f"Issues: {issue_summary}"
+        # 3.3 Conversation history: append user + assistant turns and persist.
+        # We set the field directly (bypassing StateManager's list-extend merge)
+        # so re-running process_request never double-appends old entries.
+        new_history = list(project_state.conversation_history or [])
+        new_history.append({"role": "user", "content": user_input or ""})
+        new_history.append({"role": "assistant", "content": message})
+        project_state.conversation_history = new_history
+        if hasattr(self.state, "db") and hasattr(self.state.db, "save"):
+            await self.state.db.save(session_id, project_state.model_dump())
+        if hasattr(self.state, "cache"):
+            self.state.cache[session_id] = project_state
+        available_agents = self._get_available_agents(project_state) if project_state else []
+        return {
+            "message": message,
+            "state_snapshot": project_state.model_dump() if project_state else None,
+            "artifacts": results,
+            "intent": graph_result.get("intent"),
+            "plan": plan,
+            "project_state": project_state,
+            "agent_results": agent_results,
+            "available_agents": available_agents,
+            "current_step": current_step,
+            "next_step": next_step,
+            "awaiting_user_action": bool(getattr(project_state, "awaiting_user_action", False)),
+        }
+
+    def _get_available_agents(self, project_state: Any) -> list[dict]:
+        """Return all agents with phase/dependency readiness metadata for the UI agent picker."""
+        agents = []
+        current_phase = getattr(project_state, "current_phase", "initialization")
+        for entry in AGENT_STORE:
+            phases = entry.get("phase_compatibility") or []
+            is_phase_compatible = "*" in phases or current_phase in phases
+            unmet_requires = self._unmet_requires(project_state, entry.get("requires") or [])
+            blocked_by = [
+                producer
+                for producer in (get_producer_for_artifact(artifact) for artifact in unmet_requires)
+                if producer
+            ]
+            agents.append({
+                "agent_id": entry["id"],
+                "agent_name": entry.get("name", entry["id"]),
+                "description": entry.get("description", ""),
+                "phase_compatibility": phases,
+                "interaction_mode": entry.get("interaction_mode", "functional"),
+                "supports_selective_regen": bool(entry.get("supports_selective_regen", False)),
+                "expensive": bool(entry.get("expensive", False)),
+                "is_phase_compatible": is_phase_compatible,
+                "unmet_requires": unmet_requires,
+                "blocked_by": blocked_by,
+                "is_available": is_phase_compatible and not unmet_requires,
+            })
+        return agents
+
+    def _state_has_artifact(self, project_state: Any, key: str) -> bool:
+        if key == "*":
+            return True
+        val = getattr(project_state, key, None)
+        if val is None:
+            return False
+        if isinstance(val, (list, dict)):
+            return len(val) > 0
+        if hasattr(val, "model_dump"):
+            dumped = val.model_dump()
+            if isinstance(dumped, dict):
+                return any(value not in (None, "", [], {}, False) for value in dumped.values())
+        return True
+
+    def _unmet_requires(self, project_state: Any, requires: list[str]) -> list[str]:
+        if "*" in requires:
+            return []
+        return [artifact for artifact in requires if not self._state_has_artifact(project_state, artifact)]
+
+    def _extract_context(self, project_state: Any, required_context: list[str]) -> dict:
+        """Build context dict from project_state for the given keys; '*' means full state."""
+        if not required_context or ("*" in required_context):
+            return project_state.model_dump() if hasattr(project_state, "model_dump") else {}
+        out = {}
+        for key in required_context:
+            if "." in key:
+                val = project_state
+                for part in key.split("."):
+                    val = getattr(val, part, None) if not isinstance(val, dict) else val.get(part)
+                out[key] = val
+            else:
+                val = getattr(project_state, key, None)
+                out[key] = val.model_dump() if hasattr(val, "model_dump") else val
+        return out
+
+    def _to_dict(self, value: Any) -> dict:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return dict(value)
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        return {}
+
+    def _produced_artifacts(self, agent_id: str) -> list[str]:
+        entry = get_agent_by_id(agent_id) or {}
+        return list(entry.get("produces") or [])
+
+    def _is_blocked_by_dependency(self, required_context: list[str], blocked_artifacts: set[str]) -> bool:
+        if not blocked_artifacts:
+            return False
+        if "*" in (required_context or []):
+            return True
+        return any(key.split(".")[0] in blocked_artifacts for key in (required_context or []))
+
+    def _is_explicit_continue(self, user_input: str, project_state: Any) -> bool:
+        text = (user_input or "").strip().lower()
+        if not text:
+            return False
+        if not getattr(project_state, "awaiting_user_action", False):
+            return False
+        if not getattr(project_state, "next_recommended_agent_id", None):
+            return False
+        return text in CONTINUE_PHRASES or any(
+            phrase in text for phrase in CONTINUE_PHRASES if " " in phrase
+        )
+
+    def _build_next_step_prompt(self, current_agent_id: str | None, next_agent_id: str | None) -> str:
+        current_name = (get_agent_by_id(current_agent_id) or {}).get("name", current_agent_id or "Current step")
+        next_name = (get_agent_by_id(next_agent_id) or {}).get("name", next_agent_id or "next step")
+        return (
+            f"{current_name} is complete. Review the current deliverables and tell me what to change, "
+            f"or say 'continue' to move to {next_name}."
+        )
+
+    async def _general_inquiry_message(
+        self,
+        project_state: Any,
+        user_input: str,
+        conversation_history: list[dict] | None = None,
+    ) -> str:
+        """Contextual reply when intent is unknown; no agents run (but we may call the LLM to phrase it).
+
+        Uses ``conversation_history`` (last N turns from ProjectState) so the LLM can
+        reference what has already been discussed when answering the user's question.
+        """
+        llm = getattr(self, "_summary_llm", None)
+        phase = getattr(project_state, "current_phase", "initialization") or "initialization"
+        arch = self._to_dict(getattr(project_state, "architecture", None))
+        roadmap = self._to_dict(getattr(project_state, "roadmap", None))
+        summary = {
+            "phase": phase,
+            "requirements_complete": bool(getattr(getattr(project_state, "requirements", None), "is_complete", False)),
+            "has_architecture": bool(arch and (arch.get("tech_stack") or arch.get("system_diagram") or arch.get("api_design"))),
+            "has_roadmap": bool(roadmap and (roadmap.get("phases") or roadmap.get("implementation_tasks"))),
+            "has_mockups": bool(getattr(project_state, "mockups", None)),
+        }
+        # Format recent conversation turns for the LLM (excludes the current user message
+        # which is appended separately, so we take the history *before* this turn).
+        history_text = format_conversation_history(conversation_history or [])
+        if llm is not None:
+            try:
+                history_section = (
+                    f"\n\nRecent conversation:\n{history_text}" if history_text else ""
+                )
+                prompt = (
+                    "You are the orchestrator for a project-planning assistant. "
+                    "The user's message wasn't clearly a task request, so no agent will run. "
+                    "Using the project state and conversation history below, respond helpfully in 2–4 short sentences (unless prompted differently by the user):\n"
+                    "1) Briefly answer their question, referencing prior conversation context where relevant.\n"
+                    "2) Note where we are in the process (current phase and which deliverables are done).\n"
+                    "3) Tell the user how to proceed (e.g. say 'continue' or ask to change something).\n"
+                    "Do not make up information that isn't in the project state or conversation history.\n\n"
+                    f"Project state summary: {json.dumps(summary)}"
+                    f"{history_section}\n"
+                    f"User message: {user_input!r}\n\nYour reply:"
+                )
+                if hasattr(llm, "ainvoke"):
+                    response = await llm.ainvoke(prompt)
+                else:
+                    response = llm.invoke(prompt)
+                text = self._extract_llm_text(response)
+                if text:
+                    return text
+            except Exception:
+                pass
+        # Deterministic fallback when LLM is unavailable or fails.
+        parts = [f"We're in the **{phase.replace('_', ' ')}** phase."]
+        if summary["requirements_complete"]:
+            parts.append("Requirements are complete.")
+        if summary["has_architecture"]:
+            parts.append("Architecture (tech stack and diagrams) is ready.")
+        if summary["has_roadmap"]:
+            parts.append("We have a roadmap.")
+        if summary["has_mockups"]:
+            parts.append("Mockups have been generated.")
+        if (user_input or "").strip():
+            parts.append(
+                "You can say **continue** to move to the next step, ask to change something specific, "
+                "or tell me what you'd like to focus on."
+            )
+        else:
+            parts.append("You can say **continue** to move to the next step, or ask to change something.")
+        return " ".join(parts)
+
+    def _resolve_next_auto_agent_id(
+        self,
+        completed_agent_id: str | None,
+        project_state: Any,
+        remaining_plan: list[Task],
+    ) -> str | None:
+        default_next = self._get_default_next_agent_id(completed_agent_id, project_state)
+        if default_next:
+            return default_next
+        return remaining_plan[0].agent_id if remaining_plan else None
+
+    def _get_default_next_agent_id(self, completed_agent_id: str | None, project_state: Any) -> str | None:
+        if completed_agent_id not in AUTO_FLOW_SEQUENCE:
+            return None
+        if completed_agent_id == "requirements_collector" and not self._requirements_ready_for_handoff(project_state):
+            return None
+        current_index = AUTO_FLOW_SEQUENCE.index(completed_agent_id)
+        if current_index + 1 >= len(AUTO_FLOW_SEQUENCE):
+            return None
+        return AUTO_FLOW_SEQUENCE[current_index + 1]
+
+    def _requirements_ready_for_handoff(self, project_state: Any) -> bool:
+        if getattr(project_state, "current_phase", None) == "requirements_complete":
+            return True
+        requirements = getattr(project_state, "requirements", None)
+        return bool(getattr(requirements, "is_complete", False))
+
+    async def _summarize_single_step(
+        self,
+        agent_result: dict,
+        project_state: Any,
+        raw_result: dict,
+        next_agent_id: str | None,
+    ) -> tuple[str, str]:
+        llm = getattr(self, "_summary_llm", None)
+        if llm is not None:
+            try:
+                prompt = self._build_summary_prompt(agent_result, project_state, raw_result, next_agent_id)
+                if hasattr(llm, "ainvoke"):
+                    response = await llm.ainvoke(prompt)
+                else:
+                    response = llm.invoke(prompt)
+                text = self._extract_llm_text(response)
+                if text:
+                    return text, "llm"
+            except Exception:
+                pass
+        return self._fallback_step_summary(agent_result, project_state, next_agent_id), "fallback"
+
+    def _build_summary_prompt(
+        self,
+        agent_result: dict,
+        project_state: Any,
+        raw_result: dict,
+        next_agent_id: str | None,
+    ) -> str:
+        agent_id = agent_result.get("agent_id") or "agent"
+        next_prompt = self._build_next_step_prompt(agent_id, next_agent_id) if next_agent_id else (
+            "This step is complete. Review the deliverables and tell me what you want to change."
+        )
+        summary_payload = {
+            "agent_id": agent_id,
+            "agent_name": agent_result.get("agent_name"),
+            "agent_content": raw_result.get("content") or agent_result.get("content") or "",
+            "deliverable_keys": agent_result.get("state_delta_keys") or [],
+            "requirements": self._to_dict(getattr(project_state, "requirements", None)),
+            "architecture": self._to_dict(getattr(project_state, "architecture", None)),
+            "roadmap": self._to_dict(getattr(project_state, "roadmap", None)),
+            "mockups": [self._to_dict(item) for item in getattr(project_state, "mockups", []) or []],
+            "export_artifacts": self._to_dict(getattr(project_state, "export_artifacts", None)),
+        }
+        return (
+            "You are the master orchestrator for a project-planning assistant. "
+            "Write a concise user-facing summary of the just-completed step. "
+            "Explain what was produced, what the frontend should now render, and end by telling the user "
+            "to either request changes or explicitly say 'continue' for the next step if one exists. "
+            "Do not mention JSON or internal field names.\n\n"
+            f"Completed step data:\n{json.dumps(summary_payload, indent=2, default=str)}\n\n"
+            f"Closing instruction: {next_prompt}"
+        )
+
+    def _extract_llm_text(self, response: Any) -> str:
+        if response is None:
+            return ""
+        if isinstance(response, str):
+            return response.strip()
+        content = getattr(response, "content", None)
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item.strip())
+                elif isinstance(item, dict) and item.get("text"):
+                    parts.append(str(item.get("text")).strip())
+                elif hasattr(item, "text"):
+                    parts.append(str(getattr(item, "text")).strip())
+            return "\n".join(part for part in parts if part).strip()
+        return str(response).strip()
+
+    def _fallback_step_summary(
+        self,
+        agent_result: dict,
+        project_state: Any,
+        next_agent_id: str | None,
+    ) -> str:
+        agent_id = agent_result.get("agent_id")
+        next_prompt = self._build_next_step_prompt(agent_id, next_agent_id) if next_agent_id else (
+            "This step is complete. Review the deliverables and tell me what you want to change."
+        )
+        if agent_id == "project_architect":
+            architecture = self._to_dict(getattr(project_state, "architecture", None))
+            tech = architecture.get("tech_stack", {})
+            rendered = []
+            if tech:
+                rendered.append("the selected tech stack")
+            if architecture.get("system_diagram"):
+                rendered.append("the system diagram")
+            if architecture.get("data_schema"):
+                rendered.append("the ERD/data schema")
+            if architecture.get("deployment_strategy"):
+                rendered.append("the deployment strategy")
+            if architecture.get("api_design"):
+                rendered.append("the API design")
+            rendered_text = ", ".join(rendered) if rendered else "the architecture deliverables"
+            return (
+                "Architecture is ready. "
+                f"The current stack is frontend={tech.get('frontend', 'N/A')}, "
+                f"backend={tech.get('backend', 'N/A')}, database={tech.get('database', 'N/A')}, "
+                f"and DevOps={tech.get('devops', 'N/A')}. "
+                f"The frontend can now render {rendered_text}. {next_prompt}"
+            )
+        if agent_id == "requirements_collector":
+            requirements = self._to_dict(getattr(project_state, "requirements", None))
+            features = requirements.get("functional") or []
+            if self._requirements_ready_for_handoff(project_state) and next_agent_id:
+                return (
+                    f"Requirements are complete. I now have {len(features)} core functional requirements plus the "
+                    "current goals, users, constraints, timeline, and budget for the project. "
+                    "The frontend can now render the completed requirements summary for review. "
+                    f"{next_prompt}"
+                )
+            return (
+                f"Requirements are updated. I now have {len(features)} core functional requirements and the latest "
+                "constraints, goals, and user context for the project. "
+                "The frontend can now render the refreshed requirements summary. "
+                f"{next_prompt}"
+            )
+        if agent_id == "execution_planner":
+            roadmap = self._to_dict(getattr(project_state, "roadmap", None))
+            phases = roadmap.get("phases") or []
+            milestones = roadmap.get("milestones") or []
+            tasks = roadmap.get("implementation_tasks") or []
+            phase_names = [p.get("name") for p in phases[:3] if isinstance(p, dict) and p.get("name")]
+            milestone_names = [m.get("name") for m in milestones[:3] if isinstance(m, dict) and m.get("name")]
+            parts: list[str] = []
+            parts.append(
+                f"The execution plan is ready with {len(phases)} phases, {len(milestones)} milestones, "
+                f"and {len(tasks)} implementation tasks."
+            )
+            if phase_names:
+                suffix = "..." if len(phases) > len(phase_names) else ""
+                parts.append(f" Key phases include: {', '.join(phase_names)}{suffix}.")
+            if milestone_names:
+                suffix = "..." if len(milestones) > len(milestone_names) else ""
+                parts.append(f" Key milestones include: {', '.join(milestone_names)}{suffix}.")
+            parts.append(
+                " The frontend can now render the full roadmap view, including phases, milestones, and tasks. "
+                f"{next_prompt}"
+            )
+            return "".join(parts)
+        if agent_id == "mockup_agent":
+            mockups = getattr(project_state, "mockups", []) or []
+            return (
+                f"Mockups are ready for {len(mockups)} screen(s). "
+                "The frontend can now render the generated wireframes and screen-level interaction details. "
+                f"{next_prompt}"
+            )
+        if agent_id == "exporter":
+            export_artifacts = self._to_dict(getattr(project_state, "export_artifacts", None))
+            return (
+                f"Export is complete. The generated files are available at "
+                f"{export_artifacts.get('saved_path', 'the configured output path')}. "
+                "The frontend can now render the export metadata and download options. "
+                f"{next_prompt}"
+            )
+        return f"This step is complete. {next_prompt}"
+
+    def _summarize_agent_issues(self, agent_results: list[dict]) -> str:
+        issues = []
+        for ar in agent_results:
+            status = ar.get("status") or ""
+            if status == "success":
+                continue
+            agent_id = ar.get("agent_id") or "agent"
+            detail = ar.get("error") or ar.get("blocked_by")
+            issues.append(f"{agent_id}: {status}{f' ({detail})' if detail else ''}")
+        return "; ".join(issues)
+
+    def _requirements_to_collector_state(self, requirements: Any) -> Any:
+        """Translate canonical requirements into the collector's RequirementsState."""
+        from src.protocols.schemas import RequirementsState
+
+        req = self._to_dict(requirements)
+        return RequirementsState(
+            project_type=req.get("project_type"),
+            target_users=req.get("target_users") or [],
+            key_features=req.get("functional") or [],
+            technical_constraints=req.get("constraints") or [],
+            business_goals=req.get("business_goals") or [],
+            timeline=req.get("timeline"),
+            budget=req.get("budget"),
+            is_complete=bool(req.get("is_complete", False)),
+            progress=float(req.get("progress", 0.0) or 0.0),
+        )
+
+    def _collector_state_to_requirements_delta(self, collector_requirements: Any, existing: Any) -> dict:
+        """Merge collector output into canonical requirements without wiping unrelated fields."""
+        current = self._to_dict(existing)
+        if hasattr(collector_requirements, "model_dump"):
+            rs_dump = collector_requirements.model_dump()
+        else:
+            rs_dump = self._to_dict(collector_requirements)
+
+        merged = dict(current)
+        if rs_dump.get("project_type") is not None:
+            merged["project_type"] = rs_dump.get("project_type")
+        if rs_dump.get("key_features") not in (None, []):
+            merged["functional"] = rs_dump.get("key_features") or []
+        if rs_dump.get("technical_constraints") not in (None, []):
+            merged["constraints"] = rs_dump.get("technical_constraints") or []
+        if rs_dump.get("target_users") not in (None, []):
+            merged["target_users"] = rs_dump.get("target_users") or []
+        if rs_dump.get("business_goals") not in (None, []):
+            merged["business_goals"] = rs_dump.get("business_goals") or []
+        if rs_dump.get("timeline") not in (None, ""):
+            merged["timeline"] = rs_dump.get("timeline")
+        if rs_dump.get("budget") not in (None, ""):
+            merged["budget"] = rs_dump.get("budget")
+        if "is_complete" in rs_dump:
+            merged["is_complete"] = bool(rs_dump.get("is_complete"))
+        if "progress" in rs_dump and rs_dump.get("progress") is not None:
+            merged["progress"] = float(rs_dump.get("progress") or 0.0)
+        return merged
+
+    def _normalize_mockups(self, entries: list[Any]) -> list[dict]:
+        normalized: list[dict] = []
+        for entry in entries:
+            item = self._to_dict(entry)
+            if not item.get("screen_name") and item.get("screen_id"):
+                item["screen_name"] = item["screen_id"]
+            if "interactions" not in item or item.get("interactions") is None:
+                item["interactions"] = []
+            if not item.get("wireframe_code"):
+                scene = item.get("excalidraw_scene")
+                spec = item.get("wireframe_spec")
+                if scene is not None:
+                    item["wireframe_code"] = json.dumps(scene, default=str)
+                elif spec is not None:
+                    item["wireframe_code"] = json.dumps(spec, default=str)
+            normalized.append(item)
+        return normalized
+
+    async def _run_agent(
+        self,
+        task: Task,
+        context: dict,
+        user_input: str,
+        agent: Any,
+        *,
+        project_state: Any | None = None,
+    ) -> dict | None:
+        """Run agent for task; return { state_delta, content } or None."""
+        agent_id = task.agent_id
+        if agent_id == "project_architect":
+            req = context.get("requirements")
+            req_dict = req if isinstance(req, dict) else (req.model_dump() if hasattr(req, "model_dump") else {})
+            input_data = {
+                "requirements": req_dict,
+                "existing_architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                "user_request": user_input,
+            }
+            raw = await agent.process(input_data)
+            state_delta = raw.get("state_delta") or {}
+            if not state_delta and raw.get("architecture") is not None:
+                state_delta = {"architecture": raw["architecture"]}
+            return {"state_delta": state_delta, "content": raw.get("summary") or ""}
+
+        if agent_id == "requirements_collector":
+            req = context.get("requirements")
+            rs = self._requirements_to_collector_state(req)
+            history = context.get("conversation_history") or []
+            raw = await agent.process_message(user_input, rs, history)
+            req_out = raw.get("requirements")
+            if req_out is None:
+                return {"state_delta": {}, "content": raw.get("response") or ""}
+            state_delta = {
+                "requirements": self._collector_state_to_requirements_delta(
+                    req_out,
+                    getattr(project_state, "requirements", None) if project_state is not None else req,
+                )
+            }
+            return {"state_delta": state_delta, "content": raw.get("response") or ""}
+
+        if agent_id == "execution_planner":
+            payload = {
+                "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
+                "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                "existing_roadmap": context.get("roadmap") or self._to_dict(getattr(project_state, "roadmap", None)),
+                "user_request": user_input,
+            }
+            raw = await agent.process(payload)
+            state_delta = raw.get("state_delta") or {}
+            if not state_delta and raw.get("roadmap") is not None:
+                state_delta = {"roadmap": raw.get("roadmap")}
+            return {
+                "state_delta": state_delta,
+                "content": raw.get("summary") or raw.get("content") or "",
+            }
+
+        if agent_id == "mockup_agent":
+            payload = {
+                "requirements": context.get("requirements") or self._to_dict(getattr(project_state, "requirements", None)),
+                "architecture": context.get("architecture") or self._to_dict(getattr(project_state, "architecture", None)),
+                "platform": "web",
+                "user_request": user_input,
+            }
+            raw = await agent.process(payload)
+            state_delta = raw.get("state_delta") or {}
+            if isinstance(state_delta.get("mockups"), list):
+                state_delta = dict(state_delta)
+                state_delta["mockups"] = self._normalize_mockups(state_delta["mockups"])
+            return {
+                "state_delta": state_delta,
+                "content": raw.get("summary") or raw.get("content") or "",
+            }
+
+        if agent_id == "exporter":
+            payload = (
+                project_state.model_dump()
+                if project_state is not None and hasattr(project_state, "model_dump")
+                else dict(context)
+            )
+            payload["user_request"] = user_input
+
+            if hasattr(agent, "execute"):
+                exec_out = await agent.execute(payload, context=payload, tools=[])
+                raw_content = getattr(exec_out, "content", {})
+                state_delta = getattr(exec_out, "state_delta", {}) or {}
+                if isinstance(raw_content, dict):
+                    content = raw_content.get("summary") or raw_content.get("content") or ""
+                    if not state_delta:
+                        state_delta = raw_content.get("state_delta") or {}
+                else:
+                    content = str(raw_content) if raw_content is not None else ""
+                return {"state_delta": state_delta, "content": content}
+
+            if hasattr(agent, "process"):
+                raw = await agent.process(payload)
+                return {
+                    "state_delta": raw.get("state_delta") or {},
+                    "content": raw.get("summary") or raw.get("content") or "",
+                }
+
+        return None
+
+    def _synthesize_response(
+        self, results: list[dict], agent_results: list[dict] | None = None
+    ) -> str:
+        """Turn agent results into one user-facing message (summarized/formatted for display)."""
+        if not results:
+            return "No agents ran."
+        max_display_chars = 500
+        use_labels = (
+            agent_results is not None
+            and len(agent_results) == len(results)
+        )
+        parts = []
+        for i, r in enumerate(results):
+            c = (r.get("content") or r.get("summary") or "").strip()
+            if not c:
+                continue
+            if len(c) > max_display_chars:
+                c = c[:max_display_chars].rstrip() + "\u2026"
+            label = None
+            if use_labels and i < len(agent_results):
+                label = (agent_results[i].get("agent_name") or agent_results[i].get("agent_id") or "").strip()
+            if label:
+                parts.append(f"**{label}:** {c}")
+            else:
+                parts.append(c)
+        if not parts:
+            return "Done."
+        if len(parts) == 1:
+            return parts[0]
+        return "\n\n".join(parts)

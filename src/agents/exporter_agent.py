@@ -1,6 +1,7 @@
 """Organizes the final plan into Markdown, Canvas output, PDFs, or GitHub-ready documentation."""
 
 from __future__ import annotations
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import json
 import os
@@ -194,7 +195,7 @@ def _roadmap_to_markdown(roadmap: Any) -> str:
 
 
 def _mockups_to_markdown(mockups: Any) -> str:
-    """Build UI/UX Mockups section. Supports screen_name, user_flow, wireframe_code, interactions."""
+    """Build UI/UX Mockups section. Supports legacy and rich mockup payloads."""
     lines = ["## 4. UI/UX Mockups\n"]
     if isinstance(mockups, str):
         lines.append(f"*{mockups}*")
@@ -206,11 +207,21 @@ def _mockups_to_markdown(mockups: Any) -> str:
         s = screen if isinstance(screen, dict) else (screen.model_dump() if hasattr(screen, "model_dump") else {})
         name = s.get("screen_name", "Screen")
         flow = s.get("user_flow", "")
-        lines.append(f"- **{name}**: {flow}")
+        lines.append(f"- **{name}**: {flow}" if flow else f"- **{name}**")
         interactions = s.get("interactions", [])
         if interactions:
             lines.append("  - Interactions: " + ", ".join(interactions))
-        wireframe_code = s.get("wireframe_code", "").strip()
+        if s.get("screenshot_path"):
+            lines.append("  - Preview: " + str(s["screenshot_path"]))
+
+        raw_wireframe = s.get("wireframe_code")
+        wireframe_code = raw_wireframe.strip() if isinstance(raw_wireframe, str) else ""
+        if not wireframe_code:
+            if s.get("excalidraw_scene"):
+                wireframe_code = json.dumps(s.get("excalidraw_scene"), indent=2)
+            elif s.get("wireframe_spec"):
+                wireframe_code = json.dumps(s.get("wireframe_spec"), indent=2)
+
         if wireframe_code:
             # Match mockup agent output: Excalidraw JSON, or HTML/Mermaid snippets
             if wireframe_code.startswith("{") and ("\"type\": \"excalidraw\"" in wireframe_code or "\"elements\"" in wireframe_code):
@@ -246,7 +257,8 @@ def compile_markdown_document(
     mockups: Any,
 ) -> str:
     """Build full export markdown from project name, summary, and state fragments."""
-    title = f"# {project_name.upper()} - Comprehensive Project Plan\n"
+    name = (project_name or "Untitled Project").strip() or "Untitled Project"
+    title = f"# {name.upper()} - Comprehensive Project Plan\n"
     exec_summary = f"## Executive Summary\n{summary}\n"
     parts = [title, exec_summary]
     for section in (_requirements_to_markdown(reqs), _architecture_to_markdown(arch), _roadmap_to_markdown(roadmap), _mockups_to_markdown(mockups)):
@@ -300,20 +312,22 @@ class ExporterAgent(BaseAgent):
             llm_client=llm_client,
             review_config=review_config or {"min_score": 0.80},
         )
-        print("Initializing Exporter Agent...")
+        # print("Initializing Exporter Agent...")
 
     async def _generate(self, input: Any, context: dict, tools: list) -> Dict[str, Any]:
         """Agent-specific generation logic."""
-        print("--- EXPORTER AGENT GENERATING ---", flush=True)
+        # print("--- EXPORTER AGENT GENERATING ---", flush=True)
         payload = input if isinstance(input, dict) else context
-        project_name = payload.get("project_name", "Untitled Project")
+        project_name = payload.get("project_name") or "Untitled Project"
+        if not isinstance(project_name, str):
+            project_name = "Untitled Project"
         reqs = self._extract_fragment(payload.get("requirements", {}))
         arch = self._extract_fragment(payload.get("architecture", {}))
         roadmap = self._extract_fragment(payload.get("roadmap", payload.get("plan", {})))
         mockups = self._extract_fragment(payload.get("mockups", payload.get("mockup", {})))
 
         executive_summary = await self._generate_executive_summary(project_name, reqs, arch, roadmap, mockups)
-        print("  [1/2] Compiling Markdown Artifacts...", flush=True)
+        # print("  [1/2] Compiling Markdown Artifacts...", flush=True)
         raw_markdown = compile_markdown_document(
             project_name=project_name,
             summary=executive_summary,
@@ -324,9 +338,9 @@ class ExporterAgent(BaseAgent):
         )
         final_markdown = format_markdown(raw_markdown)
 
-        print("  [2/2] Running PDF Exporter Tool...", flush=True)
+        # print("  [2/2] Running PDF Exporter Tool...", flush=True)
         pdf_tool = PDFExporter()
-        safe_name = project_name.lower().replace(" ", "_")
+        safe_name = (project_name or "Untitled Project").lower().replace(" ", "_")
         export_dir = "outputs"
         os.makedirs(export_dir, exist_ok=True)
         pdf_destination = os.path.join(export_dir, f"{safe_name}.pdf")
@@ -339,9 +353,27 @@ class ExporterAgent(BaseAgent):
             if os.path.exists(html_fallback):
                 saved_path = html_fallback
 
+        existing_artifacts = payload.get("export_artifacts", {})
+        if hasattr(existing_artifacts, "model_dump"):
+            existing_artifacts = existing_artifacts.model_dump()
+        existing_artifacts = existing_artifacts or {}
+        generated_formats = ["markdown", "pdf"]
+        exported_at = datetime.now(timezone.utc).isoformat()
+        history = list(existing_artifacts.get("history") or [])
+        history.append(
+            {
+                "saved_path": saved_path,
+                "generated_formats": generated_formats,
+                "exported_at": exported_at,
+            }
+        )
         new_artifacts = ExportArtifacts(
             executive_summary=executive_summary,
             markdown_content=final_markdown,
+            saved_path=saved_path,
+            generated_formats=generated_formats,
+            exported_at=exported_at,
+            history=history,
         )
         return {
             "content": final_markdown,
@@ -365,7 +397,10 @@ class ExporterAgent(BaseAgent):
         """Helper to generate a concise summary via LLM. Uses a slice of each payload section."""
         if self.llm_client is None:
             return "Executive summary unavailable (LLM not configured)."
-        system_prompt = "You are a Senior Technical Project Manager. Write a highly concise, 2-paragraph executive summary of the following project."
+        system_prompt = (
+            "You are a Senior Technical Project Manager. Write a highly concise, 2-paragraph executive summary of the following project. "
+            "Describe ONLY what is in the provided Requirements (and Architecture/Roadmap). Do not add features that are not listed—e.g. if 'user authentication' or 'authentication' is not in the Requirements, do not mention it."
+        )
         # Include a bit of every available section (truncated so prompt stays reasonable)
         max_chars = 1000
         reqs_str = json.dumps(reqs)[:max_chars] if reqs else "(none)"
@@ -381,11 +416,11 @@ class ExporterAgent(BaseAgent):
         )
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
         try:
-            print("  [LLM] Generating Executive Summary...", flush=True)
+            # print("  [LLM] Generating Executive Summary...", flush=True)
             response = await self.llm.ainvoke(messages)
             return response.content.strip()
         except Exception as e:
-            print(f"  [Error] Failed to generate summary: {e}")
+            # print(f"  [Error] Failed to generate summary: {e}")
             return "Executive summary generation failed."
 
     def _extract_fragment(self, data: Any) -> Any:
