@@ -6,7 +6,8 @@ Usage (from project root):
 
 Uses the same MasterOrchestrator and AgentRegistry as the full app: real
 requirements_collector, project_architect, execution_planner, mockup_agent, exporter.
-State is in-memory (no DB). Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env so
+Persistence uses SupabaseAdapter if SUPABASE_URL and SUPABASE_KEY are set in .env,
+otherwise falls back to in-memory. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env so
 all agents can run; otherwise agents that need the key will be skipped.
 
 The CLI intentionally prints only the raw orchestrator message so the terminal
@@ -22,6 +23,7 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+from dotenv import load_dotenv
 
 
 def _ensure_project_root_on_path() -> None:
@@ -34,14 +36,15 @@ def _ensure_project_root_on_path() -> None:
 _ensure_project_root_on_path()
 
 
-from src.storage.memory_store import InMemoryPersistenceAdapter
+from src.state.persistence import get_default_adapter
 from src.state.state_manager import StateManager
 from src.orchestrator.master_agent import MasterOrchestrator
 from src.orchestrator.agent_store import AGENT_STORE
 
 
 async def main() -> None:
-    persistence = InMemoryPersistenceAdapter()
+    load_dotenv()  # Load .env file so Supabase credentials are available
+    persistence = get_default_adapter()
     state_manager = StateManager(persistence)
 
     #use_llm = os.environ.get("USE_LLM_INTENT", "").strip() in ("1", "true", "yes")
