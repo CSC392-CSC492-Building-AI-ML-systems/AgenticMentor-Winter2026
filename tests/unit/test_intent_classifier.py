@@ -16,24 +16,26 @@ def classifier():
 
 
 def test_requirements_gathering_initialization(classifier):
-    """'I want to build a task app' in initialization -> requirements_gathering."""
+    """'I want to build a task app' in initialization -> create / requirements."""
     result = classifier.analyze("I want to build a task app", "initialization")
-    assert result["primary_intent"] == "requirements_gathering"
+    assert result["primary_intent"] == "create"
+    assert result.get("target_artifacts") == ["requirements"]
     assert "requirements_collector" in result["requires_agents"]
     assert result["confidence"] >= 0.0
 
 
 def test_architecture_design_requirements_complete(classifier):
-    """'generate the architecture' in requirements_complete -> architecture_design."""
+    """'generate the architecture' in requirements_complete -> create / architecture."""
     result = classifier.analyze("generate the architecture", "requirements_complete")
-    assert result["primary_intent"] == "architecture_design"
+    assert result["primary_intent"] == "create"
+    assert result.get("target_artifacts") == ["architecture"]
     assert "project_architect" in result["requires_agents"]
 
 
 def test_architecture_design_api_keyword(classifier):
-    """Mention of API/diagram in requirements_complete -> architecture_design."""
+    """Mention of API/diagram in requirements_complete -> create / architecture."""
     result = classifier.analyze("we need a diagram and tech stack", "requirements_complete")
-    assert result["primary_intent"] == "architecture_design"
+    assert result["primary_intent"] == "create"
     assert "project_architect" in result["requires_agents"]
 
 
@@ -45,19 +47,21 @@ def test_export_any_phase(classifier):
 
 
 def test_execution_planning_architecture_complete(classifier):
-    """Roadmap/timeline in architecture_complete -> execution_planning."""
+    """Roadmap/timeline in architecture_complete -> create / roadmap."""
     result = classifier.analyze("give me a roadmap and timeline", "architecture_complete")
-    assert result["primary_intent"] == "execution_planning"
+    assert result["primary_intent"] == "create"
+    assert result.get("target_artifacts") == ["roadmap"]
     assert "execution_planner" in result["requires_agents"]
 
 
 def test_requirements_follow_up_allowed_in_later_phase(classifier):
-    """Requirements-like follow-up language in later phases should still route to requirements_gathering."""
+    """Requirements-like follow-up language in later phases should still route to create / requirements."""
     result = classifier.analyze(
         "I want this to stay simple for personal use as a side project",
         "requirements_complete",
     )
-    assert result["primary_intent"] == "requirements_gathering"
+    assert result["primary_intent"] == "create"
+    assert result.get("target_artifacts") == ["requirements"]
     assert "requirements_collector" in result["requires_agents"]
 
 
@@ -81,17 +85,15 @@ def test_unknown_no_keywords(classifier):
 
 
 def test_intent_result_shape(classifier):
-    """Result has required keys and valid types."""
+    """Result has required keys and valid types, including new target_artifacts field."""
     result = classifier.analyze("we need a roadmap and timeline", "architecture_complete")
     assert "primary_intent" in result
     assert "requires_agents" in result
     assert "confidence" in result
+    assert "target_artifacts" in result
     assert isinstance(result["requires_agents"], list)
+    assert isinstance(result["target_artifacts"], list)
     assert 0.0 <= result["confidence"] <= 1.0
-    if result["primary_intent"] != "unknown":
-        assert result["requires_agents"] == INTENT_TO_AGENTS.get(
-            result["primary_intent"], []
-        )
 
 
 @pytest.mark.skipif(
@@ -110,14 +112,15 @@ def test_intent_classifier_with_llm_when_configured():
     assert "primary_intent" in result
     assert "requires_agents" in result
     assert "confidence" in result
+    assert "target_artifacts" in result
     assert isinstance(result["requires_agents"], list)
     assert 0.0 <= result["confidence"] <= 1.0
-    # LLM should often classify this as requirements_gathering
+    # LLM should classify this as create/requirements or similar
     assert result["primary_intent"] in (
-        "requirements_gathering",
-        "unknown",
-        "architecture_design",
+        "create",
+        "update",
+        "inspect",
         "export",
-        "mockup_creation",
-        "execution_planning",
+        "general_inquiry",
+        "unknown",
     )

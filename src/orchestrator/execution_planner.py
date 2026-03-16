@@ -6,6 +6,7 @@ for Reviewer and Exporter; it consumes Architect output.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.orchestrator.agent_store import (
@@ -13,6 +14,8 @@ from src.orchestrator.agent_store import (
     get_agent_by_id,
     get_producer_for_artifact,
 )
+
+_log = logging.getLogger(__name__)
 from src.orchestrator.execution_plan import ExecutionPlan, Task
 
 
@@ -127,9 +130,15 @@ class ExecutionPlanner:
             agent_ids = ["requirements_collector"]
 
         phase = getattr(project_state, "current_phase", "initialization")
+        target_artifacts = list(intent.get("target_artifacts") or [])
         # Resolve upstream deps first. Expand downstream only when requested (e.g. "only tech stack" -> False).
         resolved = _resolve_upstream(agent_ids, project_state)
-        if expand_downstream and primary_intent not in {"unknown", "requirements_gathering"}:
+        # Don't expand downstream for requirements-only intents (old or new vocab).
+        is_requirements_intent = (
+            primary_intent in {"unknown", "requirements_gathering"}
+            or (primary_intent in {"create", "update"} and target_artifacts == ["requirements"])
+        )
+        if expand_downstream and not is_requirements_intent:
             resolved = _resolve_downstream(resolved, project_state)
 
         plan = ExecutionPlan()
@@ -139,6 +148,9 @@ class ExecutionPlanner:
                 continue
             phases = entry.get("phase_compatibility") or []
             if "*" not in phases and phase not in phases:
+                _log.warning(
+                    "Agent '%s' dropped from plan: not phase-compatible with '%s'", aid, phase
+                )
                 continue
             required_context = list(entry.get("requires") or [])
             plan.add_task(agent_id=aid, required_context=required_context)

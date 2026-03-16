@@ -69,7 +69,7 @@ async def test_intent_requirements_gathering_plan_has_requirements_collector(gra
         "session_id": "t1",
     })
     assert result.get("error") is None
-    assert result["intent"]["primary_intent"] == "requirements_gathering"
+    assert result["intent"]["primary_intent"] == "create"
     agent_ids = [t.agent_id for t in result["plan"].tasks]
     assert "requirements_collector" in agent_ids
 
@@ -89,7 +89,7 @@ async def test_intent_architecture_design_plan_has_project_architect(graph_compo
         "session_id": "t2",
     })
     assert result.get("error") is None
-    assert result["intent"]["primary_intent"] == "architecture_design"
+    assert result["intent"]["primary_intent"] == "create"
     agent_ids = [t.agent_id for t in result["plan"].tasks]
     assert "project_architect" in agent_ids
 
@@ -110,7 +110,7 @@ async def test_intent_execution_planning_plan_has_execution_planner(graph_compon
         "session_id": "t3",
     })
     assert result.get("error") is None
-    assert result["intent"]["primary_intent"] == "execution_planning"
+    assert result["intent"]["primary_intent"] == "create"
     agent_ids = [t.agent_id for t in result["plan"].tasks]
     assert "execution_planner" in agent_ids
 
@@ -131,7 +131,7 @@ async def test_intent_mockup_creation_plan_has_mockup_agent(graph_components):
         "session_id": "t4",
     })
     assert result.get("error") is None
-    assert result["intent"]["primary_intent"] == "mockup_creation"
+    assert result["intent"]["primary_intent"] == "create"
     agent_ids = [t.agent_id for t in result["plan"].tasks]
     assert "mockup_agent" in agent_ids
 
@@ -195,7 +195,7 @@ async def test_architecture_intent_blocked_in_initialization_phase(graph_compone
         "session_id": "t7",
     })
     plan_agent_ids = [t.agent_id for t in result["plan"].tasks]
-    assert result["intent"]["primary_intent"] in ("architecture_design", "unknown", "requirements_gathering")
+    assert result["intent"]["primary_intent"] in ("create", "unknown")
     assert "project_architect" not in plan_agent_ids, "project_architect must be excluded in initialization phase"
     assert isinstance(plan_agent_ids, list)
 
@@ -232,7 +232,7 @@ async def test_transition_requirements_then_architecture_plan(graph_components):
     )
     graph = build_orchestrator_graph(_make_mock_sm(state1), ic, ep)
     r1 = await graph.ainvoke({"user_input": "I want to clarify our goals", "session_id": "multi"})
-    assert r1["intent"]["primary_intent"] == "requirements_gathering"
+    assert r1["intent"]["primary_intent"] == "create"
     assert "requirements_collector" in [t.agent_id for t in r1["plan"].tasks]
 
     state2 = ProjectState(
@@ -242,7 +242,7 @@ async def test_transition_requirements_then_architecture_plan(graph_components):
     )
     graph2 = build_orchestrator_graph(_make_mock_sm(state2), ic, ep)
     r2 = await graph2.ainvoke({"user_input": "generate the architecture", "session_id": "multi"})
-    assert r2["intent"]["primary_intent"] == "architecture_design"
+    assert r2["intent"]["primary_intent"] == "create"
     assert "project_architect" in [t.agent_id for t in r2["plan"].tasks]
 
 
@@ -268,7 +268,7 @@ async def test_transition_architecture_then_roadmap_plan(graph_components):
     )
     graph2 = build_orchestrator_graph(_make_mock_sm(state2), ic, ep)
     r2 = await graph2.ainvoke({"user_input": "give me a roadmap and timeline", "session_id": "ar"})
-    assert r2["intent"]["primary_intent"] == "execution_planning"
+    assert r2["intent"]["primary_intent"] == "create"
     assert "execution_planner" in [t.agent_id for t in r2["plan"].tasks]
 
 

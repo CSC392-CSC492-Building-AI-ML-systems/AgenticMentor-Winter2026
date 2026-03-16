@@ -77,7 +77,7 @@ async def test_graph_load_state_classify_build_plan(compiled_graph, mock_state_m
     }
     result = await compiled_graph.ainvoke(initial)
     assert "intent" in result
-    assert result["intent"]["primary_intent"] == "requirements_gathering"
+    assert result["intent"]["primary_intent"] == "create"
     assert "requirements_collector" in result["intent"]["requires_agents"]
     assert "plan" in result
     assert len(result["plan"].tasks) >= 1
@@ -109,7 +109,7 @@ async def test_graph_architecture_intent():
         "user_input": "generate the architecture",
         "session_id": "s2",
     })
-    assert result["intent"]["primary_intent"] == "architecture_design"
+    assert result["intent"]["primary_intent"] == "create"
     agent_ids = [t.agent_id for t in result["plan"].tasks]
     assert "project_architect" in agent_ids
 
@@ -120,7 +120,7 @@ async def test_master_orchestrator_process_request(mock_state_manager):
     orch = MasterOrchestrator(mock_state_manager, use_llm=False)
     out = await orch.process_request("I want to clarify our goals", "s1")
     assert "intent" in out
-    assert out["intent"]["primary_intent"] == "requirements_gathering"
+    assert out["intent"]["primary_intent"] == "create"
     assert "plan" in out
     assert len(out["plan"].tasks) >= 1
     assert "project_state" in out

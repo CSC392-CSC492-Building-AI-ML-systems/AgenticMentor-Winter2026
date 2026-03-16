@@ -7,21 +7,25 @@ import json
 from typing import Any
 
 from src.orchestrator.agent_registry import AgentRegistry
-from src.orchestrator.agent_store import AGENT_STORE, get_agent_by_id, get_producer_for_artifact
+from src.orchestrator.agent_store import (
+    AGENT_STORE,
+    AGENT_PHASE_TRANSITIONS as PHASE_TRANSITION_MAP,
+    PHASE_CONFIG,
+    VALID_PHASES,
+    get_agent_by_id,
+    get_agent_for_intent,
+    get_producer_for_artifact,
+)
 from src.orchestrator.execution_plan import ExecutionPlan, Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
 from src.orchestrator.intent_classifier import IntentClassifier
 from src.utils.prompt import format_conversation_history
 
-# Maps agent_id → the phase that becomes active after that agent completes.
-PHASE_TRANSITION_MAP: dict[str, str] = {
-    "requirements_collector": "requirements_complete",
-    "project_architect": "architecture_complete",
-    "execution_planner": "planning_complete",
-    "mockup_agent": "design_complete",
-    "exporter": "exportable",
-}
+# Error type constants for "no plan" responses.
+_ERR_NO_STATE = "no_state"
+_ERR_NO_PLAN = "no_plan_but_state"
+_ERR_PLAN_BUILD_FAILED = "plan_build_failed"
 
 AGENT_TIMEOUT_SECONDS: dict[str, float] = {
     "requirements_collector": 45.0,
@@ -52,6 +56,93 @@ AUTO_FLOW_SEQUENCE = (
     "mockup_agent",
     "exporter",
 )
+
+
+def _no_plan_message(error_type: str, intent: dict | None, project_state: Any) -> str:
+    """Return a user-facing message explaining why no plan could be built."""
+    phase = getattr(project_state, "current_phase", "initialization") if project_state else None
+    primary_intent = (intent or {}).get("primary_intent", "unknown")
+    target_artifacts = (intent or {}).get("target_artifacts", [])
+
+    if error_type == _ERR_NO_STATE:
+        return "No session found. Please start a new project or provide a valid session ID."
+
+    if error_type == _ERR_NO_PLAN:
+        phase_cfg = PHASE_CONFIG.get(phase or "initialization", {})
+        allowed_intents = phase_cfg.get("allowed_intents", [])
+        allowed_agents = phase_cfg.get("allowed_agents", [])
+        if primary_intent not in allowed_intents:
+            if allowed_agents:
+                return (
+                    f"The action '{primary_intent}' is not available in the current phase '{phase}'. "
+                    f"Currently you can: {', '.join(allowed_intents)}. "
+                    f"Try running the {allowed_agents[0]} first to advance the workflow."
+                )
+            return (
+                f"The action '{primary_intent}' is not available in the current phase '{phase}'."
+            )
+        if target_artifacts:
+            missing = [
+                a for a in target_artifacts
+                if not _state_has_artifact_standalone(project_state, a)
+            ]
+            if missing:
+                producers = [get_producer_for_artifact(a) for a in missing if get_producer_for_artifact(a)]
+                if producers:
+                    return (
+                        f"Cannot proceed: missing required artifacts ({', '.join(missing)}). "
+                        f"Run {' then '.join(producers)} first."
+                    )
+                return f"Cannot proceed: missing required artifacts ({', '.join(missing)})."
+        return (
+            f"No agents are available for your request in phase '{phase}'. "
+            "Check that required prerequisite steps have been completed."
+        )
+
+    # _ERR_PLAN_BUILD_FAILED
+    return (
+        "An internal error occurred while building the execution plan. "
+        "Please try again or contact support if this persists."
+    )
+
+
+def _state_has_artifact_standalone(project_state: Any, key: str) -> bool:
+    """Standalone (non-method) version of _state_has_artifact for use in module-level helpers."""
+    if key == "*":
+        return True
+    val = getattr(project_state, key, None)
+    if val is None:
+        return False
+    if isinstance(val, (list, dict)):
+        return len(val) > 0
+    if hasattr(val, "model_dump"):
+        dumped = val.model_dump()
+        if isinstance(dumped, dict):
+            return any(value not in (None, "", [], {}, False) for value in dumped.values())
+    return True
+
+
+def _no_plan_response(
+    error_type: str,
+    intent: dict | None,
+    project_state: Any,
+    available_agents: list,
+    plan: Any = None,
+) -> dict:
+    """Assemble the standard response dict for no-plan situations."""
+    return {
+        "message": _no_plan_message(error_type, intent, project_state),
+        "state_snapshot": project_state.model_dump() if project_state and hasattr(project_state, "model_dump") else None,
+        "artifacts": [],
+        "intent": intent,
+        "plan": plan,
+        "project_state": project_state,
+        "agent_results": [],
+        "available_agents": available_agents,
+        "current_step": None,
+        "next_step": None,
+        "awaiting_user_action": False,
+    }
 
 
 def _make_llm_if_configured() -> Any:
@@ -243,19 +334,13 @@ class MasterOrchestrator:
                 "awaiting_user_action": False,
             }
         if not project_state:
-            return {
-                "message": "No plan or state.",
-                "state_snapshot": None,
-                "artifacts": [],
-                "intent": intent,
-                "plan": plan,
-                "project_state": None,
-                "agent_results": [],
-                "available_agents": available_agents,
-                "current_step": None,
-                "next_step": None,
-                "awaiting_user_action": False,
-            }
+            return _no_plan_response(
+                error_type=_ERR_NO_STATE,
+                intent=intent,
+                project_state=None,
+                available_agents=available_agents,
+                plan=plan,
+            )
         # Recovery: empty plan but we have state and requirements — advance phase and rebuild plan so "continue" proceeds
         if (not plan or not plan.tasks):
             phase = getattr(project_state, "current_phase", "initialization")
@@ -263,19 +348,21 @@ class MasterOrchestrator:
                 project_state = await self.state.update(session_id, {"current_phase": "requirements_complete"})
                 plan = self.execution_planner.plan(intent or {}, project_state)
         if not plan or not plan.tasks:
-            return {
-                "message": "No plan or state.",
-                "state_snapshot": project_state.model_dump() if project_state else None,
-                "artifacts": [],
-                "intent": intent,
-                "plan": plan,
-                "project_state": project_state,
-                "agent_results": [],
-                "available_agents": available_agents,
-                "current_step": None,
-                "next_step": None,
-                "awaiting_user_action": False,
-            }
+            intent_primary = (intent or {}).get("primary_intent", "unknown")
+            phase = getattr(project_state, "current_phase", "initialization")
+            phase_cfg = PHASE_CONFIG.get(phase, {})
+            error_type = (
+                _ERR_NO_PLAN
+                if intent_primary not in phase_cfg.get("allowed_intents", [intent_primary])
+                else _ERR_PLAN_BUILD_FAILED
+            )
+            return _no_plan_response(
+                error_type=error_type,
+                intent=intent,
+                project_state=project_state,
+                available_agents=available_agents,
+                plan=plan,
+            )
         planned_tasks = list(plan.tasks)
         tasks_to_run = planned_tasks if agent_selection_mode == "manual" else planned_tasks[:1]
         results = []
@@ -352,9 +439,9 @@ class MasterOrchestrator:
                 project_state = await self.state.update(session_id, state_delta)
             # 3.2 Phase transition: update current_phase after agent completes.
             next_phase = PHASE_TRANSITION_MAP.get(task.agent_id)
-            should_advance_phase = bool(next_phase)
+            should_advance_phase = bool(next_phase) and next_phase in VALID_PHASES
             if task.agent_id == "requirements_collector":
-                should_advance_phase = bool(next_phase) and self._requirements_ready_for_handoff(project_state)
+                should_advance_phase = should_advance_phase and self._requirements_ready_for_handoff(project_state)
             if should_advance_phase:
                 project_state = await self.state.update(session_id, {"current_phase": next_phase})
             results.append(result)
@@ -490,9 +577,16 @@ class MasterOrchestrator:
         """Return all agents with phase/dependency readiness metadata for the UI agent picker."""
         agents = []
         current_phase = getattr(project_state, "current_phase", "initialization")
+        phase_cfg = PHASE_CONFIG.get(current_phase, {})
+        allowed_by_phase = phase_cfg.get("allowed_agents", [])
         for entry in AGENT_STORE:
-            phases = entry.get("phase_compatibility") or []
-            is_phase_compatible = "*" in phases or current_phase in phases
+            agent_id = entry["id"]
+            # Use PHASE_CONFIG as the authoritative source; fall back to per-agent list for unknown phases.
+            if current_phase in VALID_PHASES:
+                is_phase_compatible = agent_id in allowed_by_phase
+            else:
+                phases = entry.get("phase_compatibility") or []
+                is_phase_compatible = "*" in phases or current_phase in phases
             unmet_requires = self._unmet_requires(project_state, entry.get("requires") or [])
             blocked_by = [
                 producer
@@ -500,10 +594,10 @@ class MasterOrchestrator:
                 if producer
             ]
             agents.append({
-                "agent_id": entry["id"],
-                "agent_name": entry.get("name", entry["id"]),
+                "agent_id": agent_id,
+                "agent_name": entry.get("name", agent_id),
                 "description": entry.get("description", ""),
-                "phase_compatibility": phases,
+                "phase_compatibility": entry.get("phase_compatibility") or [],
                 "interaction_mode": entry.get("interaction_mode", "functional"),
                 "supports_selective_regen": bool(entry.get("supports_selective_regen", False)),
                 "expensive": bool(entry.get("expensive", False)),
