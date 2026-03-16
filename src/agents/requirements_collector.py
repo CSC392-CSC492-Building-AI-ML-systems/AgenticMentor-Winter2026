@@ -209,12 +209,12 @@ class RequirementsAgent(BaseAgent):
         response = await self.llm.ainvoke(messages)
         
         try:
-            content = response.content
+            content = response.content if hasattr(response, "content") else str(response)
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
-            
+
             updated_reqs = json.loads(content.strip())
             current_dict = state["requirements"].model_dump()
             
@@ -263,12 +263,12 @@ class RequirementsAgent(BaseAgent):
         response = await self.llm.ainvoke(messages)
         
         try:
-            content = response.content
+            content = response.content if hasattr(response, "content") else str(response)
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
-            
+
             completion_data = json.loads(content.strip())
             
             current_dict = state["requirements"].model_dump()
@@ -314,7 +314,8 @@ Return ONLY the question text, nothing else."""
             HumanMessage(content=question_prompt),
         ]
         response = await self.llm.ainvoke(messages)
-        question = response.content.strip().strip('"\'')
+        raw = response.content if hasattr(response, "content") else str(response)
+        question = raw.strip().strip('"\'')
         state["next_question"] = question
         state["messages"].append(AIMessage(content=question))
         

@@ -112,3 +112,6 @@ outputs/mockups/
 
 # Claude Code
 .claude/
+
+# venv
+testGround/

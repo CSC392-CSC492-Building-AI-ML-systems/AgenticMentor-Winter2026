@@ -22,7 +22,7 @@ faiss-cpu==1.13.2
 sentence-transformers==2.7.0
 
 # ── Pydantic / settings ───────────────────────────────────────────────────────
-pydantic==2.12.5
+pydantic[email]==2.12.5
 pydantic-settings==2.13.1
 
 # ── Database ──────────────────────────────────────────────────────────────────
