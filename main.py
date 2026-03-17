@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -56,10 +56,7 @@ orchestrator = MasterOrchestrator(state_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global state_manager, orchestrator
     print(f"Starting AgenticMentor API on {settings.api_host}:{settings.api_port}")
-    state_manager = StateManager(default_memory_adapter)
-    orchestrator = MasterOrchestrator(state_manager)
     yield
     print("Shutting down AgenticMentor API")
 
@@ -137,6 +134,7 @@ def _orch_state_to_full_response(
         mockups=mockups,
         conversation_history=history,
         available_agents=available_agents or [],
+        export_artifacts=orch_state.export_artifacts.model_dump() if orch_state.export_artifacts else {},
     )
 
 
@@ -195,14 +193,21 @@ async def list_projects(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """List all project IDs with basic metadata."""
-    session_ids = await default_memory_adapter.list_sessions()
+    session_ids = await db_adapter.list_sessions()
     result = []
     for sid in session_ids:
-        raw = await default_memory_adapter.get(sid)
+        raw = await db_adapter.get(sid)
         if raw:
+            reqs = raw.get("requirements") or {}
+            display_name = (
+                reqs.get("app_name")
+                or reqs.get("project_type")
+                or raw.get("project_name")
+                or sid
+            )
             result.append({
                 "project_id": sid,
-                "project_name": raw.get("project_name") or sid,
+                "project_name": display_name,
                 "current_phase": raw.get("current_phase", "initialization"),
                 "created_at": raw.get("created_at"),
             })
@@ -223,7 +228,7 @@ async def create_project(
         session_id=project_id,
         project_name=project.name,
     )
-    await default_memory_adapter.save(project_id, initial_state.model_dump())
+    await db_adapter.save(project_id, initial_state.model_dump())
 
     available_agents = orch._get_available_agents(initial_state)
     return _orch_state_to_full_response(project_id, initial_state, available_agents)
@@ -257,7 +262,7 @@ async def chat(
     orch = _get_orchestrator()
 
     # Verify project exists
-    existing = await default_memory_adapter.get(project_id)
+    existing = await db_adapter.get(project_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -289,6 +294,18 @@ async def chat(
     )
 
 
+@app.delete("/projects/{project_id}", status_code=204)
+async def delete_project(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    """Delete a project and all its data."""
+    existing = await db_adapter.get(project_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await db_adapter.delete(project_id)
+
+
 @app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
 async def get_requirements(
     project_id: str,
@@ -307,8 +324,9 @@ async def get_requirements(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app", 
-        host=settings.api_host, 
-        port=settings.api_port, 
-        reload=settings.api_debug
+        "main:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.api_debug,
+        reload_excludes=["venv/*", ".venv/*", "*.pyc", "__pycache__/*"],
     )

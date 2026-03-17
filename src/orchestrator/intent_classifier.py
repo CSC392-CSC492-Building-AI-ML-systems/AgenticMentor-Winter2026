@@ -28,8 +28,8 @@ INTENT_PATTERNS = {
         "triggers": ["how long", "when", "priority"]
     },
     "export": {
-        "keywords": ["export", "download", "document", "pdf"],
-        "phase_compatibility": ["*"],
+        "keywords": ["export", "download", "pdf"],
+        "phase_compatibility": ["architecture_complete", "planning_complete", "design_complete", "exportable"],
         "triggers": ["save as", "download as"]
     }
 }
@@ -101,9 +101,21 @@ def _current_message_wants_export(user_input: str) -> bool:
     return any(s in lower for s in _EXPORT_IN_MESSAGE)
 
 
-def _override_export_if_requested(user_input: str, result: IntentResult) -> IntentResult:
-    """If the current message clearly asks for PDF/export but result is not export, override to export."""
+_EXPORT_ALLOWED_PHASES = {
+    "architecture_complete",
+    "planning_complete",
+    "design_complete",
+    "exportable",
+}
+
+
+def _override_export_if_requested(user_input: str, result: IntentResult, current_phase: str = "") -> IntentResult:
+    """If the current message clearly asks for PDF/export but result is not export, override to export.
+    Only applies when the project is past the requirements stage to prevent premature exporter invocation.
+    """
     if not _current_message_wants_export(user_input):
+        return result
+    if current_phase not in _EXPORT_ALLOWED_PHASES:
         return result
     agents = list(result.get("requires_agents") or [])
     if "exporter" in agents:
@@ -256,11 +268,11 @@ class IntentClassifier:
                         confidence=float(getattr(result, "confidence", 0.5)),
                         expand_downstream=bool(expand),
                     )
-                    return _override_export_if_requested(user_input, out)
+                    return _override_export_if_requested(user_input, out, current_phase)
             except Exception:
                 pass
         return _override_export_if_requested(
-            user_input, self._analyze_rule_based(user_input, current_phase, conversation_history)
+            user_input, self._analyze_rule_based(user_input, current_phase, conversation_history), current_phase
         )
 
     async def analyze_async(
@@ -290,9 +302,9 @@ class IntentClassifier:
                         confidence=float(getattr(result, "confidence", 0.5)),
                         expand_downstream=bool(expand),
                     )
-                    return _override_export_if_requested(user_input, out)
+                    return _override_export_if_requested(user_input, out, current_phase)
             except Exception:
                 pass
         return _override_export_if_requested(
-            user_input, self._analyze_rule_based(user_input, current_phase, conversation_history)
+            user_input, self._analyze_rule_based(user_input, current_phase, conversation_history), current_phase
         )

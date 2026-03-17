@@ -7,11 +7,8 @@ export default function ThemeToggle() {
 
   // Initialize theme based on current HTML class or system preference
   useEffect(() => {
-    if (document.documentElement.classList.contains('dark') || 
-        window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      document.documentElement.classList.add('dark');
-      setIsDark(true);
-    }
+    document.documentElement.classList.remove('dark');
+    setIsDark(false);
   }, []);
 
   const toggleTheme = () => {

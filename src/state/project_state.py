@@ -64,6 +64,7 @@ class Sprint(BaseModel):
 class Requirements(BaseModel):
     """Requirements state fragment."""
 
+    app_name: Optional[str] = None
     project_type: Optional[str] = None
     functional: List[str] = Field(default_factory=list)
     non_functional: List[str] = Field(default_factory=list)
@@ -87,7 +88,6 @@ class ArchitectureDefinition(BaseModel):
     system_diagram: Optional[str] = None
     api_design: List[APIEndpoint] = Field(default_factory=list)
     deployment_strategy: Optional[str] = None
-
 
 class Mockup(BaseModel):
     """Design artifact produced by the mockup agent (legacy + rich schema)."""
