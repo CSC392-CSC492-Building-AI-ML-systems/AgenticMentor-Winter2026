@@ -122,7 +122,15 @@ PHASE_CONFIG: dict[str, dict] = {
     },
     "exportable": {
         "allowed_intents": ["update", "inspect", "export", "general_inquiry"],
-        "allowed_agents": ["exporter"],
+        # After export, allow upstream agents to run again so the user can
+        # tweak architecture/roadmap/mockups and optionally re-export.
+        "allowed_agents": [
+            "requirements_collector",
+            "project_architect",
+            "execution_planner",
+            "mockup_agent",
+            "exporter",
+        ],
         "required_artifacts": ["requirements", "architecture", "roadmap", "mockups"],
         "transitions_to": None,
     },

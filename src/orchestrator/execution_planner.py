@@ -11,12 +11,72 @@ from typing import Any
 
 from src.orchestrator.agent_store import (
     AGENT_STORE,
+    PHASE_CONFIG,
+    VALID_PHASES,
     get_agent_by_id,
     get_producer_for_artifact,
 )
 
 _log = logging.getLogger(__name__)
 from src.orchestrator.execution_plan import ExecutionPlan, Task
+
+
+def _compute_update_agents(intent: Any, project_state: Any) -> list[str]:
+    """
+    Given an 'update' intent and current state, return an ordered list of agent ids to run.
+
+    This keeps update flows minimal while respecting basic dependencies, for example:
+    - target_artifacts == ['architecture']              -> ['project_architect']
+    - target_artifacts == ['roadmap']                  -> ['execution_planner']
+    - target_artifacts includes 'architecture' & 'roadmap'
+                                                     -> ['project_architect', 'execution_planner']
+    - target_artifacts == ['mockups']                  -> ['mockup_agent']
+    """
+    primary_intent = intent.get("primary_intent") or "unknown"
+    target_artifacts = list(intent.get("target_artifacts") or [])
+    if primary_intent != "update" or not target_artifacts:
+        return list(intent.get("requires_agents") or [])
+
+    normalized = set(target_artifacts)
+    agents: list[str] = []
+
+    has_arch = "architecture" in normalized
+    has_roadmap = "roadmap" in normalized
+    has_mockups = "mockups" in normalized
+
+    # Architecture updates should always go through project_architect.
+    if has_arch:
+        agents.append("project_architect")
+        # Roadmap often depends on architecture, so planner should follow when roadmap is also targeted.
+        if has_roadmap:
+            agents.append("execution_planner")
+    # Roadmap-only tweaks: planner can run alone if architecture already exists.
+    elif has_roadmap:
+        if _state_has_artifact(project_state, "architecture"):
+            agents.append("execution_planner")
+        else:
+            # No architecture yet – fall back to architect then planner.
+            agents.extend(["project_architect", "execution_planner"])
+
+    # Mockup-only updates.
+    if has_mockups:
+        # If architecture is also targeted, mockups will be regenerated in a separate step after architect.
+        # For pure mockup tweaks, a single mockup_agent run is enough.
+        if "mockup_agent" not in agents:
+            agents.append("mockup_agent")
+
+    # Fallback: if nothing matched, return original requires_agents.
+    if not agents:
+        return list(intent.get("requires_agents") or [])
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for aid in agents:
+        if aid not in seen:
+            seen.add(aid)
+            ordered.append(aid)
+    return ordered
 
 
 def _state_has_artifact(state: Any, key: str) -> bool:
@@ -122,15 +182,25 @@ class ExecutionPlanner:
         return an ExecutionPlan with tasks in dependency order (upstream first).
         """
         primary_intent = intent.get("primary_intent") or "unknown"
-        agent_ids = list(intent.get("requires_agents") or [])
-        expand_downstream = intent.get("expand_downstream", True)
+        target_artifacts = list(intent.get("target_artifacts") or [])
+
+        # For update intents, compute a minimal, ordered agent chain instead of blindly
+        # trusting requires_agents. This keeps flows like "update architecture and roadmap"
+        # to Architect → Planner, and "update mockups" to just Mockup agent.
+        if primary_intent == "update" and target_artifacts:
+            agent_ids = _compute_update_agents(intent, project_state)
+            # For targeted updates we default to no downstream fan-out; the explicit
+            # list from _compute_update_agents is the full chain.
+            expand_downstream = False
+        else:
+            agent_ids = list(intent.get("requires_agents") or [])
+            expand_downstream = intent.get("expand_downstream", True)
         # Unknown/empty intent should be cheap and conversational: route only to requirements collection,
         # not the full pipeline. This avoids expensive accidental fan-out on ambiguous turns.
         if not agent_ids or primary_intent == "unknown":
             agent_ids = ["requirements_collector"]
 
         phase = getattr(project_state, "current_phase", "initialization")
-        target_artifacts = list(intent.get("target_artifacts") or [])
         # Resolve upstream deps first. Expand downstream only when requested (e.g. "only tech stack" -> False).
         resolved = _resolve_upstream(agent_ids, project_state)
         # Don't expand downstream for requirements-only intents (old or new vocab).
@@ -146,12 +216,22 @@ class ExecutionPlanner:
             entry = get_agent_by_id(aid)
             if not entry:
                 continue
-            phases = entry.get("phase_compatibility") or []
-            if "*" not in phases and phase not in phases:
-                _log.warning(
-                    "Agent '%s' dropped from plan: not phase-compatible with '%s'", aid, phase
-                )
-                continue
+            # Phase compatibility: PHASE_CONFIG is the authoritative source when the
+            # phase is known; fall back to per-agent phase_compatibility otherwise.
+            if phase in VALID_PHASES:
+                allowed = aid in PHASE_CONFIG.get(phase, {}).get("allowed_agents", [])
+                if not allowed:
+                    _log.warning(
+                        "Agent '%s' dropped from plan: not phase-compatible with '%s'", aid, phase
+                    )
+                    continue
+            else:
+                phases = entry.get("phase_compatibility") or []
+                if "*" not in phases and phase not in phases:
+                    _log.warning(
+                        "Agent '%s' dropped from plan: not phase-compatible with '%s'", aid, phase
+                    )
+                    continue
             required_context = list(entry.get("requires") or [])
             plan.add_task(agent_id=aid, required_context=required_context)
         return plan

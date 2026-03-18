@@ -364,7 +364,20 @@ class MasterOrchestrator:
                 plan=plan,
             )
         planned_tasks = list(plan.tasks)
-        tasks_to_run = planned_tasks if agent_selection_mode == "manual" else planned_tasks[:1]
+        # For manual mode we always run the full plan. For auto mode, we normally
+        # run one agent at a time, except for targeted update flows where the
+        # ExecutionPlanner has already produced a minimal agent chain for this
+        # single request (e.g. architect → planner). In that case we run the
+        # whole mini-chain so the user doesn't have to say "continue" between
+        # tightly-coupled update steps.
+        if agent_selection_mode == "manual":
+            tasks_to_run = planned_tasks
+        else:
+            intent_primary = (intent or {}).get("primary_intent", "").strip()
+            if intent_primary == "update":
+                tasks_to_run = planned_tasks
+            else:
+                tasks_to_run = planned_tasks[:1]
         results = []
         agent_results = []
         blocked_artifacts: set[str] = set()
