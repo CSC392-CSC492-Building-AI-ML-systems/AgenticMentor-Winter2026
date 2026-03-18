@@ -24,6 +24,7 @@ sentence-transformers==2.7.0
 # ── Pydantic / settings ───────────────────────────────────────────────────────
 pydantic[email]==2.12.5
 pydantic-settings==2.13.1
+email-validator==2.2.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
 supabase==2.10.0
