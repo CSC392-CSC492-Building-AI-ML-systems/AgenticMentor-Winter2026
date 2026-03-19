@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 from functools import lru_cache
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,10 +31,10 @@ class Settings(BaseSettings):
     # Firebase Authentication configuration
     # Path to a Firebase service account JSON file on disk.
     # This file should NOT be committed to source control; point to it via environment variable.
-    firebase_service_account_path: str | None = None
+    firebase_service_account_path: Optional[str] = None
 
     # Web API key from your Firebase project settings (used for email/password auth via REST).
-    firebase_api_key: str | None = None
+    firebase_api_key: Optional[str] = None
     
     model_config = SettingsConfigDict(
         env_file=".env",
