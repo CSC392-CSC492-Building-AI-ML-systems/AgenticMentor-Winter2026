@@ -26,7 +26,6 @@ from src.protocols.schemas import (
     TokenResponse,
 )
 from src.utils.config import settings
-from src.storage.memory_store import default_memory_adapter
 from src.state.state_manager import StateManager
 from src.orchestrator.master_agent import MasterOrchestrator
 from src.state.project_state import ProjectState as OrchestratorState
@@ -37,17 +36,9 @@ from src.auth.firebase_auth import (
     verify_id_token_payload,
 )
 
-# Module-level singletons initialised in lifespan
-state_manager: StateManager | None = None
-orchestrator: MasterOrchestrator | None = None
-from src.utils.config import settings
-
-# Import the StateManager and MasterOrchestrator for Phase 4
 from src.state.persistence import get_default_adapter
-from src.state.state_manager import StateManager
-from src.orchestrator.master_agent import MasterOrchestrator
 
-# Initialize the adapter, state manager, and orchestrator in the correct order
+# Module-level singletons (initialised once at startup)
 db_adapter = get_default_adapter()
 state_manager = StateManager(db_adapter)
 orchestrator = MasterOrchestrator(state_manager)
@@ -88,9 +79,16 @@ def _get_orchestrator() -> MasterOrchestrator:
 
 
 def _get_state_manager() -> StateManager:
-    if state_manager is None:
-        raise HTTPException(status_code=503, detail="State manager not ready")
     return state_manager
+
+
+async def _assert_project_owner(project_id: str, current_user: FirebaseUser) -> None:
+    """Ensure the requested project belongs to the current user."""
+    raw = await _get_state_manager().db.get(project_id)
+    if not raw:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if (raw.get("owner_uid") or "") != (current_user.uid or ""):
+        raise HTTPException(status_code=404, detail="Project not found")
 
 
 def _requirements_to_schema(req_dict: dict) -> RequirementsState:
@@ -183,6 +181,11 @@ async def auth_login_email(request: EmailPasswordLoginRequest) -> TokenResponse:
 async def auth_verify_token(request: TokenVerificationRequest) -> FirebaseUser:
     return await verify_id_token_payload(request.id_token)
 
+@app.get("/auth/me", response_model=FirebaseUser)
+async def auth_me(current_user: FirebaseUser = Depends(get_current_user)) -> FirebaseUser:
+    """Debug helper: return the currently authenticated Firebase user."""
+    return current_user
+
 
 # ---------------------------------------------------------------------------
 # Projects
@@ -193,10 +196,11 @@ async def list_projects(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """List all project IDs with basic metadata."""
-    session_ids = await db_adapter.list_sessions()
+    sm = _get_state_manager()
+    session_ids = await sm.db.list_sessions(owner_uid=current_user.uid)
     result = []
     for sid in session_ids:
-        raw = await db_adapter.get(sid)
+        raw = await sm.db.get(sid)
         if raw:
             reqs = raw.get("requirements") or {}
             display_name = (
@@ -220,15 +224,15 @@ async def create_project(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Create a new project and return its full initial state."""
-    sm = _get_state_manager()
     orch = _get_orchestrator()
 
     project_id = str(uuid.uuid4())
     initial_state = OrchestratorState(
         session_id=project_id,
+        owner_uid=current_user.uid,
         project_name=project.name,
     )
-    await db_adapter.save(project_id, initial_state.model_dump())
+    await _get_state_manager().db.save(project_id, initial_state.model_dump())
 
     available_agents = orch._get_available_agents(initial_state)
     return _orch_state_to_full_response(project_id, initial_state, available_agents)
@@ -240,10 +244,10 @@ async def get_project(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Get full project state by ID."""
-    sm = _get_state_manager()
     orch = _get_orchestrator()
+    await _assert_project_owner(project_id, current_user)
 
-    orch_state = await sm.load(project_id)
+    orch_state = await _get_state_manager().load(project_id)
     if orch_state is None or orch_state.session_id != project_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -258,13 +262,9 @@ async def chat(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Send a message to the orchestrator and get a multi-agent response."""
-    sm = _get_state_manager()
     orch = _get_orchestrator()
 
-    # Verify project exists
-    existing = await db_adapter.get(project_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Project not found")
+    await _assert_project_owner(project_id, current_user)
 
     try:
         result = await orch.process_request(
@@ -300,10 +300,8 @@ async def delete_project(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Delete a project and all its data."""
-    existing = await db_adapter.get(project_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Project not found")
-    await db_adapter.delete(project_id)
+    await _assert_project_owner(project_id, current_user)
+    await _get_state_manager().db.delete(project_id)
 
 
 @app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
@@ -312,8 +310,8 @@ async def get_requirements(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Get current requirements state for a project."""
-    sm = _get_state_manager()
-    orch_state = await sm.load(project_id)
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
     if orch_state is None or orch_state.session_id != project_id:
         raise HTTPException(status_code=404, detail="Project not found")
 

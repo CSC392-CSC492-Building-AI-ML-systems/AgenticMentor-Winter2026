@@ -57,7 +57,7 @@ class SupabaseAdapter:
     # Core Interface Methods
     # ========================================================================
 
-    async def get(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def get(self, session_id: str, owner_uid: str | None = None) -> Optional[Dict[str, Any]]:
         """Load complete project state as dict (or None if not found).
         
         Joins projects + conversation_messages + mockups tables and reconstructs
@@ -65,7 +65,10 @@ class SupabaseAdapter:
         """
         try:
             # Get project data
-            project_response = self.client.table("projects").select("*").eq("session_id", session_id).execute()
+            query = self.client.table("projects").select("*").eq("session_id", session_id)
+            if owner_uid is not None:
+                query = query.eq("owner_uid", owner_uid)
+            project_response = query.execute()
             
             if not project_response.data:
                 return None
@@ -73,26 +76,25 @@ class SupabaseAdapter:
             project = project_response.data[0]
             
             # Get conversation messages
-            messages_response = (
+            messages_query = (
                 self.client.table("conversation_messages")
                 .select("role, content, created_at, metadata")
                 .eq("session_id", session_id)
-                .order("created_at")
-                .execute()
             )
+            if owner_uid is not None:
+                messages_query = messages_query.eq("owner_uid", owner_uid)
+            messages_response = messages_query.order("created_at").execute()
             
             # Get mockups
-            mockups_response = (
-                self.client.table("mockups")
-                .select("*")
-                .eq("session_id", session_id)
-                .order("created_at")
-                .execute()
-            )
+            mockups_query = self.client.table("mockups").select("*").eq("session_id", session_id)
+            if owner_uid is not None:
+                mockups_query = mockups_query.eq("owner_uid", owner_uid)
+            mockups_response = mockups_query.order("created_at").execute()
             
             # Reconstruct state_dict in the format ProjectState expects
             state_dict = {
                 "session_id": project["session_id"],
+                "owner_uid": project.get("owner_uid"),
                 "project_name": project.get("project_name"),
                 "created_at": project["created_at"],
                 "updated_at": project["updated_at"],
@@ -146,8 +148,10 @@ class SupabaseAdapter:
         """
         try:
             # 1. Upsert main project record
+            owner_uid = state_dict.get("owner_uid")
             project_data = {
                 "session_id": session_id,
+                "owner_uid": owner_uid,
                 "project_name": state_dict.get("project_name"),
                 "current_phase": state_dict.get("current_phase", "initialization"),
                 "agent_selection_mode": state_dict.get("agent_selection_mode", "auto"),
@@ -168,7 +172,10 @@ class SupabaseAdapter:
             conversation_history = state_dict.get("conversation_history", [])
             
             # Always delete existing messages first (even if list is empty)
-            self.client.table("conversation_messages").delete().eq("session_id", session_id).execute()
+            delete_query = self.client.table("conversation_messages").delete().eq("session_id", session_id)
+            if owner_uid is not None:
+                delete_query = delete_query.eq("owner_uid", owner_uid)
+            delete_query.execute()
             
             if conversation_history:
                 # Bulk insert new messages
@@ -177,6 +184,7 @@ class SupabaseAdapter:
                 message_records = [
                     {
                         "session_id": session_id,
+                        "owner_uid": owner_uid,
                         "role": msg.get("role", "user"),
                         "content": msg.get("content", ""),
                         "metadata": msg.get("metadata", {}),
@@ -192,6 +200,7 @@ class SupabaseAdapter:
             for mockup in mockups:
                 mockup_data = {
                     "session_id": session_id,
+                    "owner_uid": owner_uid,
                     "screen_id": mockup.get("screen_id"),
                     "screen_name": mockup.get("screen_name"),
                     "wireframe_spec": mockup.get("wireframe_spec", {}),
@@ -220,10 +229,13 @@ class SupabaseAdapter:
             print(f"[SupabaseAdapter] Error deleting session {session_id}: {e}")
             raise
 
-    async def list_sessions(self) -> List[str]:
-        """List all session IDs."""
+    async def list_sessions(self, owner_uid: str | None = None) -> List[str]:
+        """List session IDs (optionally filtered by owner)."""
         try:
-            response = self.client.table("projects").select("session_id").execute()
+            query = self.client.table("projects").select("session_id")
+            if owner_uid is not None:
+                query = query.eq("owner_uid", owner_uid)
+            response = query.execute()
             return [row["session_id"] for row in response.data]
         except Exception as e:
             print(f"[SupabaseAdapter] Error listing sessions: {e}")
