@@ -150,6 +150,7 @@ class ProjectStateResponse(BaseModel):
     mockups: List[Dict[str, Any]] = Field(default_factory=list)
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     available_agents: List[Dict[str, Any]] = Field(default_factory=list)
+    export_artifacts: Dict[str, Any] = Field(default_factory=dict)
 
 
 class FirebaseUser(BaseModel):

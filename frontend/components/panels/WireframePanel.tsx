@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { LayoutTemplate } from "lucide-react";
 import { useProjectStore } from "@/store/useProjectStore";
+import WireframeRenderer from "./WireframeRenderer";
 
 export default function WireframePanel() {
   const { mockups, isLoading } = useProjectStore();
@@ -9,6 +10,16 @@ export default function WireframePanel() {
 
   const hasData = mockups.length > 0;
   const current = mockups[selected];
+
+  // Parse wireframe_spec from the mockup entry
+  const getSpec = (mockup: any) => {
+    if (mockup?.wireframe_spec && typeof mockup.wireframe_spec === "object") {
+      return mockup.wireframe_spec;
+    }
+    return null;
+  };
+
+  const spec = current ? getSpec(current) : null;
 
   return (
     <>
@@ -44,7 +55,7 @@ export default function WireframePanel() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6 flex items-start justify-center">
           {isLoading && !hasData && (
             <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest animate-pulse">
               -- LOADING MOCKUPS --
@@ -59,36 +70,25 @@ export default function WireframePanel() {
             </div>
           )}
 
-          {hasData && current && (
-            <div className="space-y-4">
+          {hasData && current && spec && (
+            <div className="w-full" style={{ maxWidth: "min(100%, calc(100vh * 8/9))" }}>
+              <div style={{ aspectRatio: "6/9", width: "100%", overflow: "hidden" }}>
+                <WireframeRenderer screen={spec} />
+              </div>
+            </div>
+          )}
+
+          {hasData && current && !spec && (
+            <div className="space-y-3">
               <h2 className="text-sm font-bold text-black dark:text-white uppercase tracking-widest">
                 {current.screen_name ?? current.screen_id ?? `Screen ${selected + 1}`}
               </h2>
-
-              {current.user_flow && (
-                <p className="text-xs font-mono text-gray-600 dark:text-gray-400">{current.user_flow}</p>
-              )}
-
               {current.wireframe_code && (
-                <div className="border border-gray-200 dark:border-[#333] bg-gray-50 dark:bg-[#050505] p-4">
-                  <h3 className="text-[10px] font-bold text-black dark:text-white uppercase tracking-widest mb-2">Wireframe Code</h3>
-                  <pre className="text-[10px] font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap overflow-auto max-h-64">
-                    {typeof current.wireframe_code === "string"
-                      ? current.wireframe_code
-                      : JSON.stringify(current.wireframe_code, null, 2)}
-                  </pre>
-                </div>
-              )}
-
-              {current.interactions?.length > 0 && (
-                <div className="border border-gray-200 dark:border-[#333] bg-gray-50 dark:bg-[#050505] p-4">
-                  <h3 className="text-[10px] font-bold text-black dark:text-white uppercase tracking-widest mb-2">Interactions</h3>
-                  <ul className="space-y-1 text-xs font-mono text-gray-700 dark:text-gray-300">
-                    {current.interactions.map((ix: string, i: number) => (
-                      <li key={i}>&gt; {ix}</li>
-                    ))}
-                  </ul>
-                </div>
+                <pre className="text-[9px] font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap overflow-auto border border-dashed border-gray-200 dark:border-[#333] p-3">
+                  {typeof current.wireframe_code === "string"
+                    ? current.wireframe_code
+                    : JSON.stringify(current.wireframe_code, null, 2)}
+                </pre>
               )}
             </div>
           )}

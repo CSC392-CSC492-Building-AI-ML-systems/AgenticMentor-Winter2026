@@ -32,9 +32,13 @@ interface ProjectStore {
   currentPhase: string
   agentResults: AgentResult[]
   availableAgents: AvailableAgent[]
+  exportArtifacts: any | null
   isLoading: boolean
+  nextRecommendedAgentId: string | null
+  activeTab: string
 
   setProjectId: (id: string) => void
+  setActiveTab: (tab: string) => void
   setProjectName: (name: string) => void
   addMessage: (msg: any) => void
   setRequirements: (data: any) => void
@@ -44,7 +48,10 @@ interface ProjectStore {
   setCurrentPhase: (phase: string) => void
   setAgentResults: (results: AgentResult[]) => void
   setAvailableAgents: (agents: AvailableAgent[]) => void
+  setMessages: (msgs: any[]) => void
   setIsLoading: (loading: boolean) => void
+  setNextRecommendedAgentId: (id: string | null) => void
+  resetProject: () => void
   /** Apply a full state snapshot from the API response */
   applyStateSnapshot: (snapshot: any) => void
 }
@@ -57,6 +64,9 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   architecture: null,
   roadmap: null,
   mockups: [],
+  exportArtifacts: null,
+  nextRecommendedAgentId: null,
+  activeTab: "req",
   currentPhase: "initialization",
   agentResults: [],
   availableAgents: [],
@@ -72,16 +82,47 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   setCurrentPhase: (phase) => set({ currentPhase: phase }),
   setAgentResults: (results) => set({ agentResults: results }),
   setAvailableAgents: (agents) => set({ availableAgents: agents }),
+  setMessages: (msgs) => set({ messages: msgs }),
   setIsLoading: (loading) => set({ isLoading: loading }),
+  setNextRecommendedAgentId: (id) => set({ nextRecommendedAgentId: id }),
+  setActiveTab: (tab) => set({ activeTab: tab }),
+  resetProject: () => set({
+    messages: [],
+    requirements: null,
+    architecture: null,
+    roadmap: null,
+    mockups: [],
+    currentPhase: "initialization",
+    agentResults: [],
+    availableAgents: [],
+    nextRecommendedAgentId: null,
+  }),
 
   applyStateSnapshot: (snapshot) => {
     if (!snapshot) return
-    set({
+    const reqs = snapshot.requirements
+    const derivedName = reqs?.app_name || reqs?.project_type || snapshot.project_name || null
+    const updates: Partial<ProjectStore> = {
       currentPhase: snapshot.current_phase ?? "initialization",
-      requirements: snapshot.requirements ?? null,
+      requirements: reqs ?? null,
       architecture: snapshot.architecture ?? null,
       roadmap: snapshot.roadmap ?? null,
       mockups: snapshot.mockups ?? [],
-    })
+      exportArtifacts: snapshot.export_artifacts ?? null,
+      nextRecommendedAgentId: snapshot.next_recommended_agent_id ?? null,
+      ...(derivedName ? { projectName: derivedName } : {}),
+    }
+    // Restore conversation history from backend if present
+    if (snapshot.conversation_history?.length) {
+      const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      updates.messages = snapshot.conversation_history.map((entry: any, i: number) => ({
+        id: `history-${i}`,
+        role: entry.role === "user" ? "user" : "agent",
+        agentName: entry.role === "user" ? undefined : "Orchestrator",
+        content: entry.content ?? "",
+        timestamp: entry.timestamp ?? ts,
+      }))
+    }
+    set(updates)
   },
 }))

@@ -1,4 +1,4 @@
-import { Activity, Cpu, Clock } from "lucide-react";
+import { Activity, Cpu, Clock, Trash2 } from "lucide-react";
 
 interface ProjectNodeProps {
   id: string;
@@ -7,9 +7,10 @@ interface ProjectNodeProps {
   status: "ONLINE" | "IDLE" | "BUILDING";
   lastSync: string;
   techStack: string[];
+  onDelete?: (e: React.MouseEvent) => void;
 }
 
-export default function ProjectNode({ id, name, description, status, lastSync, techStack }: ProjectNodeProps) {
+export default function ProjectNode({ id, name, description, status, lastSync, techStack, onDelete }: ProjectNodeProps) {
   return (
     <div className="border border-gray-300 dark:border-[#444] bg-white dark:bg-black hover:bg-gray-50 dark:hover:bg-[#111] hover:border-black dark:hover:border-white transition-all p-5 flex flex-col group relative cursor-pointer h-full">
       
@@ -60,9 +61,23 @@ export default function ProjectNode({ id, name, description, status, lastSync, t
             <Clock size={10} />
             <span>SYNC: {lastSync}</span>
           </div>
-          <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-black dark:text-white font-bold">
-            <span>CONNECT</span>
-            <Activity size={10} />
+          <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex items-center gap-1.5 text-black dark:text-white font-bold">
+              <span>CONNECT</span>
+              <Activity size={10} />
+            </div>
+            {onDelete && (
+              <button
+                onClick={onDelete}
+                className="flex items-center gap-0 overflow-hidden max-w-[14px] hover:max-w-[64px] transition-all duration-300 ease-in-out text-gray-400 hover:text-red-500 dark:hover:text-red-400 group/del"
+                title="Delete"
+              >
+                <Trash2 size={11} className="flex-shrink-0" />
+                <span className="text-[9px] font-bold uppercase tracking-widest pl-1 whitespace-nowrap opacity-0 group-hover/del:opacity-100 transition-opacity duration-200">
+                  Delete
+                </span>
+              </button>
+            )}
           </div>
         </div>
 

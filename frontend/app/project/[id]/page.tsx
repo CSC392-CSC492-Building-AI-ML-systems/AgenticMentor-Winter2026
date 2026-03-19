@@ -8,20 +8,22 @@ import ArchitecturePanel from "@/components/panels/ArchitecturePanel";
 import WireframePanel from "@/components/panels/WireframePanel";
 import ExecutionPanel from "@/components/panels/ExecutionPanel";
 import RequireAuth from "@/components/auth/RequireAuth";
+import { FileDown } from "lucide-react";
 import { useProjectStore } from "@/store/useProjectStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { fetchWithAuth } from "@/lib/api";
 
 export default function ProjectPage() {
-  const [activeTab, setActiveTab] = useState("req");
+  const [consoleOpen, setConsoleOpen] = useState(true);
   const params = useParams();
   const projectId = params?.id as string | undefined;
 
-  const { setProjectId, applyStateSnapshot, setAvailableAgents, setIsLoading } = useProjectStore();
+  const { setProjectId, resetProject, applyStateSnapshot, setAvailableAgents, setIsLoading, exportArtifacts, activeTab, setActiveTab } = useProjectStore();
   const { idToken } = useAuthStore();
 
   useEffect(() => {
     if (!projectId || !idToken) return;
+    resetProject();
     setProjectId(projectId);
 
     const loadProject = async () => {
@@ -42,6 +44,17 @@ export default function ProjectPage() {
 
     loadProject();
   }, [projectId, idToken]);
+
+  const handleDownload = () => {
+    if (!exportArtifacts?.markdown_content) return;
+    const blob = new Blob([exportArtifacts.markdown_content], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "project_spec.md";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const tabs = [
     { id: "req", label: "01_Requirements" },
@@ -72,19 +85,42 @@ export default function ProjectPage() {
           </button>
         ))}
         <div className="flex-1 border-b-2 border-b-transparent"></div>
+        {exportArtifacts?.markdown_content && (
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-2 px-4 py-3 text-[10px] font-bold tracking-widest uppercase whitespace-nowrap border-l border-green-600 bg-green-600 text-white hover:bg-green-700 transition-colors flex-shrink-0"
+          >
+            <FileDown size={12} />
+            Export_Spec
+          </button>
+        )}
       </div>
       
-      {/* Active Panel Content */}
-      <div className="flex-1 flex overflow-hidden bg-white dark:bg-black transition-colors">
-        <div className="flex-1 flex flex-col h-full overflow-hidden w-full">
+      {/* Active Panel + Right Console */}
+      <div className="flex-1 flex overflow-hidden bg-white dark:bg-black transition-colors relative">
+        {/* Panel Content */}
+        <div className="flex-1 flex flex-col h-full overflow-hidden">
           {activeTab === "req" && <RequirementPanel />}
           {activeTab === "arch" && <ArchitecturePanel />}
           {activeTab === "exec" && <ExecutionPanel />}
           {activeTab === "mock" && <WireframePanel />}
         </div>
-      </div>
 
-      <ConsoleWindow />
+        {/* Toggle Button */}
+        <button
+          onClick={() => setConsoleOpen((v) => !v)}
+          className="absolute top-1/2 -translate-y-1/2 z-50 bg-white dark:bg-black border border-gray-300 dark:border-[#444] text-black dark:text-white text-[10px] font-bold uppercase tracking-widest px-1 py-3 hover:bg-gray-100 dark:hover:bg-[#111] transition-all"
+          style={{ right: consoleOpen ? "380px" : "0px" }}
+          title={consoleOpen ? "Close console" : "Open console"}
+        >
+          {consoleOpen ? "›" : "‹"}
+        </button>
+
+        {/* Right Console Sidebar — always mounted to preserve state */}
+        <div className={`flex-shrink-0 border-l border-gray-300 dark:border-[#444] flex flex-col h-full transition-all duration-200 ${consoleOpen ? "w-[380px]" : "w-0 overflow-hidden border-l-0"}`}>
+          <ConsoleWindow />
+        </div>
+      </div>
     </div>
     </RequireAuth>
   );

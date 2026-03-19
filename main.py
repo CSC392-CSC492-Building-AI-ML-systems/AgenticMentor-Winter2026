@@ -132,6 +132,7 @@ def _orch_state_to_full_response(
         mockups=mockups,
         conversation_history=history,
         available_agents=available_agents or [],
+        export_artifacts=orch_state.export_artifacts.model_dump() if orch_state.export_artifacts else {},
     )
 
 
@@ -201,9 +202,16 @@ async def list_projects(
     for sid in session_ids:
         raw = await sm.db.get(sid)
         if raw:
+            reqs = raw.get("requirements") or {}
+            display_name = (
+                reqs.get("app_name")
+                or reqs.get("project_type")
+                or raw.get("project_name")
+                or sid
+            )
             result.append({
                 "project_id": sid,
-                "project_name": raw.get("project_name") or sid,
+                "project_name": display_name,
                 "current_phase": raw.get("current_phase", "initialization"),
                 "created_at": raw.get("created_at"),
             })
@@ -286,6 +294,16 @@ async def chat(
     )
 
 
+@app.delete("/projects/{project_id}", status_code=204)
+async def delete_project(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    """Delete a project and all its data."""
+    await _assert_project_owner(project_id, current_user)
+    await _get_state_manager().db.delete(project_id)
+
+
 @app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
 async def get_requirements(
     project_id: str,
@@ -304,8 +322,9 @@ async def get_requirements(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app", 
-        host=settings.api_host, 
-        port=settings.api_port, 
-        reload=settings.api_debug
+        "main:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.api_debug,
+        reload_excludes=["venv/*", ".venv/*", "*.pyc", "__pycache__/*"],
     )
