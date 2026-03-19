@@ -32,9 +32,15 @@ class InMemoryPersistenceAdapter:
             if session_id in self._store:
                 del self._store[session_id]
 
-    async def list_sessions(self) -> List[str]:
+    async def list_sessions(self, owner_uid: str | None = None) -> List[str]:
         with self._lock:
-            return list(self._store.keys())
+            if owner_uid is None:
+                return list(self._store.keys())
+            return [
+                session_id
+                for session_id, payload in self._store.items()
+                if (payload or {}).get("owner_uid") == owner_uid
+            ]
 
     async def get_last_messages(self, session_id: str, n: int = 10) -> List[Dict[str, Any]]:
         with self._lock:
