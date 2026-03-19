@@ -1,9 +1,9 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import TopNav from "@/components/layout/TopNav";
 import ProjectNode from "@/components/dashboard/ProjectNode";
-import { Terminal, Plus, Search } from "lucide-react";
+import { Terminal, Plus, Search, X } from "lucide-react";
 import RequireAuth from "@/components/auth/RequireAuth";
 import { useAuthStore } from "@/store/useAuthStore";
 import { fetchWithAuth } from "@/lib/api";
@@ -17,28 +17,43 @@ interface Project {
 
 export default function DashboardPage() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [newName, setNewName] = useState("");
   const [search, setSearch] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState<Project | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const { idToken } = useAuthStore();
 
   useEffect(() => {
     if (!idToken) return;
+    setIsLoadingProjects(true);
     fetchWithAuth("/projects", { token: idToken })
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => setProjects(Array.isArray(data) ? data : []))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setIsLoadingProjects(false));
   }, [idToken]);
+
+  useEffect(() => {
+    if (showNameModal) setTimeout(() => inputRef.current?.focus(), 50);
+  }, [showNameModal]);
 
   const handleCreateProject = async () => {
     if (!idToken || isCreating) return;
+    const name = newName.trim() || "New Project";
     setIsCreating(true);
+    setShowNameModal(false);
+    setNewName("");
     try {
       const res = await fetchWithAuth("/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         token: idToken,
-        body: JSON.stringify({ name: `Project_${Date.now()}` }),
+        body: JSON.stringify({ name }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -52,6 +67,25 @@ export default function DashboardPage() {
     }
   };
 
+  const handleDeleteProject = async () => {
+    if (!deleteConfirm || !idToken || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetchWithAuth(`/projects/${deleteConfirm.project_id}`, {
+        method: "DELETE",
+        token: idToken,
+      });
+      if (res.ok || res.status === 204) {
+        setProjects((prev) => prev.filter((p) => p.project_id !== deleteConfirm.project_id));
+      }
+    } catch (err) {
+      console.error("Failed to delete project", err);
+    } finally {
+      setIsDeleting(false);
+      setDeleteConfirm(null);
+    }
+  };
+
   const filtered = projects.filter((p) =>
     p.project_name?.toLowerCase().includes(search.toLowerCase())
   );
@@ -60,6 +94,69 @@ export default function DashboardPage() {
     <RequireAuth>
       <div className="flex flex-col h-screen w-full bg-white dark:bg-black overflow-hidden font-mono selection:bg-gray-300 dark:selection:bg-gray-200 selection:text-black transition-colors">
         <TopNav />
+
+        {/* Delete confirmation modal */}
+        {deleteConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white dark:bg-black border border-gray-300 dark:border-[#444] w-full max-w-sm mx-4 p-6 font-mono shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-xs font-bold uppercase tracking-widest text-red-600 dark:text-red-400">Delete_Node</span>
+                <button onClick={() => setDeleteConfirm(null)} className="text-gray-400 hover:text-black dark:hover:text-white transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-600 dark:text-gray-300 uppercase tracking-widest mb-1">Are you sure you want to delete:</p>
+              <p className="text-sm font-bold text-black dark:text-white mb-5 truncate">{deleteConfirm.project_name}</p>
+              <p className="text-[9px] text-gray-400 uppercase tracking-widest mb-5">This action cannot be undone.</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="flex-1 border border-gray-300 dark:border-[#444] text-[10px] font-bold uppercase tracking-widest py-2 text-gray-600 dark:text-gray-300 hover:border-black hover:text-black dark:hover:border-white dark:hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteProject}
+                  disabled={isDeleting}
+                  className="flex-1 bg-red-600 text-white text-[10px] font-bold uppercase tracking-widest py-2 hover:bg-red-700 transition-colors disabled:opacity-50"
+                >
+                  {isDeleting ? "Deleting..." : "Delete"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Name modal */}
+        {showNameModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white dark:bg-black border border-gray-300 dark:border-[#444] w-full max-w-md mx-4 p-6 font-mono shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-xs font-bold uppercase tracking-widest text-black dark:text-white">Initialize_Node</span>
+                <button onClick={() => setShowNameModal(false)} className="text-gray-400 hover:text-black dark:hover:text-white transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Project Name</div>
+              <input
+                ref={inputRef}
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
+                placeholder="e.g. Task Manager, E-Commerce App..."
+                className="w-full border border-gray-300 dark:border-[#555] bg-gray-50 dark:bg-[#050505] text-sm text-black dark:text-white px-4 py-3 focus:outline-none focus:border-black dark:focus:border-white font-mono mb-4 transition-colors"
+              />
+              <button
+                onClick={handleCreateProject}
+                disabled={isCreating}
+                className="w-full bg-black dark:bg-white text-white dark:text-black text-[10px] font-bold uppercase tracking-widest py-3 hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors disabled:opacity-50"
+              >
+                {isCreating ? "INITIALIZING..." : "CREATE"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <main className="flex-1 flex flex-col overflow-hidden">
           <header className="px-8 py-6 border-b border-gray-300 dark:border-[#444] bg-gray-50 dark:bg-[#050505] flex flex-col md:flex-row md:items-center justify-between flex-shrink-0 gap-4 transition-colors">
@@ -89,7 +186,7 @@ export default function DashboardPage() {
               </div>
 
               <button
-                onClick={handleCreateProject}
+                onClick={() => setShowNameModal(true)}
                 disabled={isCreating}
                 className="flex items-center gap-2 h-10 px-6 bg-black dark:bg-white text-white dark:text-black text-[10px] font-bold tracking-widest uppercase hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors disabled:opacity-50"
               >
@@ -109,17 +206,22 @@ export default function DashboardPage() {
               </h2>
             </div>
 
-            {filtered.length === 0 && (
+            {isLoadingProjects ? (
+              <div className="flex items-center gap-3 text-[10px] text-gray-500 font-bold uppercase tracking-widest animate-pulse">
+                <div className="w-2 h-2 rounded-full bg-gray-400 animate-pulse" />
+                Loading workspace nodes...
+              </div>
+            ) : filtered.length === 0 ? (
               <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
                 -- NO NODES FOUND. PRESS INITIALIZE_NODE TO CREATE ONE --
               </p>
-            )}
+            ) : null}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6">
+            <div className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6 ${isLoadingProjects ? "opacity-0" : ""}`}>
               {filtered.map((p) => (
                 <div
                   key={p.project_id}
-                  className="block outline-none cursor-pointer"
+                  className="cursor-pointer"
                   onClick={() => router.push(`/project/${p.project_id}`)}
                 >
                   <ProjectNode
@@ -129,6 +231,7 @@ export default function DashboardPage() {
                     status="ONLINE"
                     lastSync={p.created_at ? new Date(p.created_at).toLocaleTimeString() : "–"}
                     techStack={[]}
+                    onDelete={(e) => { e.stopPropagation(); setDeleteConfirm(p); }}
                   />
                 </div>
               ))}
