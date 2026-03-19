@@ -53,15 +53,16 @@ class AgentState(TypedDict):
 class RequirementsAgent(BaseAgent):
     """Requirements Collector Agent using LangGraph, inheriting from BaseAgent."""
     
-    def __init__(self, review_config: Optional[dict] = None):
+    def __init__(self, review_config: Optional[dict] = None, llm_client: Any = None):
         """Initialize the agent with LLM and compile the graph."""
-        llm_client = ChatGoogleGenerativeAI(
-            model=settings.model_name,
-            temperature=settings.model_temperature,
-            max_tokens=settings.model_max_tokens,
-            google_api_key=settings.gemini_api_key,
-        )
-        
+        if llm_client is None:
+            llm_client = ChatGoogleGenerativeAI(
+                model=settings.model_name,
+                temperature=settings.model_temperature,
+                max_tokens=settings.model_max_tokens,
+                google_api_key=settings.gemini_api_key,
+            )
+
         super().__init__(
             name="RequirementsCollector",
             llm_client=llm_client,
@@ -208,12 +209,12 @@ class RequirementsAgent(BaseAgent):
         response = await self.llm.ainvoke(messages)
         
         try:
-            content = response.content
+            content = response.content if hasattr(response, "content") else str(response)
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
-            
+
             updated_reqs = json.loads(content.strip())
             current_dict = state["requirements"].model_dump()
             
@@ -262,12 +263,12 @@ class RequirementsAgent(BaseAgent):
         response = await self.llm.ainvoke(messages)
         
         try:
-            content = response.content
+            content = response.content if hasattr(response, "content") else str(response)
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
-            
+
             completion_data = json.loads(content.strip())
             
             current_dict = state["requirements"].model_dump()
@@ -313,7 +314,8 @@ Return ONLY the question text, nothing else."""
             HumanMessage(content=question_prompt),
         ]
         response = await self.llm.ainvoke(messages)
-        question = response.content.strip().strip('"\'')
+        raw = response.content if hasattr(response, "content") else str(response)
+        question = raw.strip().strip('"\'')
         state["next_question"] = question
         state["messages"].append(AIMessage(content=question))
         

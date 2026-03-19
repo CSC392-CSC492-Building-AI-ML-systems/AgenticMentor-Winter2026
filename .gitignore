@@ -109,3 +109,9 @@ frontend/.vercel
 # Excalidraw
 outputs/
 outputs/mockups/
+
+# Claude Code
+.claude/
+
+# venv
+testGround/
