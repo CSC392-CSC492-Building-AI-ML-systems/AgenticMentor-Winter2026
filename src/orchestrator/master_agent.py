@@ -20,6 +20,7 @@ from src.orchestrator.execution_plan import ExecutionPlan, Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
 from src.orchestrator.intent_classifier import IntentClassifier
+from src.orchestrator.chat_summarizer import get_effective_history, maybe_summarize
 from src.utils.prompt import format_conversation_history
 
 # Error type constants for "no plan" responses.
@@ -309,12 +310,22 @@ class MasterOrchestrator:
             and (intent.get("primary_intent") or "").strip() in ("unknown", "general_inquiry")
             and project_state is not None
         ):
-            conversation_history = list(getattr(project_state, "conversation_history", None) or [])
-            message = await self._general_inquiry_message(project_state, user_input or "", conversation_history)
+            effective_history = get_effective_history(project_state)
+            message = await self._general_inquiry_message(project_state, user_input or "", effective_history)
             new_history = list(getattr(project_state, "conversation_history", None) or [])
             new_history.append({"role": "user", "content": user_input or ""})
             new_history.append({"role": "assistant", "content": message})
             project_state.conversation_history = new_history
+            # Rolling summarization: summarize if unsummarized tail is large.
+            summ_result = await maybe_summarize(
+                project_state.conversation_history,
+                getattr(project_state, "conversation_summary", "") or "",
+                getattr(project_state, "conversation_summary_up_to_index", 0) or 0,
+                self._summary_llm,
+            )
+            if summ_result:
+                project_state.conversation_summary = summ_result[0]
+                project_state.conversation_summary_up_to_index = summ_result[1]
             if hasattr(self.state, "db") and hasattr(self.state.db, "save"):
                 await self.state.db.save(session_id, project_state.model_dump())
             if hasattr(self.state, "cache"):
@@ -567,6 +578,16 @@ class MasterOrchestrator:
         new_history.append({"role": "user", "content": user_input or ""})
         new_history.append({"role": "assistant", "content": message})
         project_state.conversation_history = new_history
+        # Rolling summarization: summarize if unsummarized tail is large.
+        summ_result = await maybe_summarize(
+            project_state.conversation_history,
+            getattr(project_state, "conversation_summary", "") or "",
+            getattr(project_state, "conversation_summary_up_to_index", 0) or 0,
+            self._summary_llm,
+        )
+        if summ_result:
+            project_state.conversation_summary = summ_result[0]
+            project_state.conversation_summary_up_to_index = summ_result[1]
         if hasattr(self.state, "db") and hasattr(self.state.db, "save"):
             await self.state.db.save(session_id, project_state.model_dump())
         if hasattr(self.state, "cache"):

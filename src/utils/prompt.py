@@ -161,5 +161,8 @@ def format_conversation_history(messages: list) -> str:
     for msg in messages[-10:]:  # Last 10 messages for context
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        formatted.append(f"{role.upper()}: {content}")
+        if role == "system":
+            formatted.append(f"SUMMARY: {content}")
+        else:
+            formatted.append(f"{role.upper()}: {content}")
     return "\n".join(formatted)

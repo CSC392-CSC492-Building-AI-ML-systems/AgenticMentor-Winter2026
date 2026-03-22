@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from src.orchestrator.chat_summarizer import get_effective_history
 from src.orchestrator.execution_plan import ExecutionPlan
 from src.orchestrator.intent_classifier import IntentResult
 
@@ -48,7 +49,7 @@ def build_orchestrator_graph(
         user_input = (state.get("user_input") or "").strip()
         project_state = state.get("project_state")
         current_phase = getattr(project_state, "current_phase", "initialization") if project_state else "initialization"
-        conversation_history = getattr(project_state, "conversation_history", None) or []
+        conversation_history = get_effective_history(project_state) if project_state else []
         if hasattr(intent_classifier, "analyze_async"):
             intent = await intent_classifier.analyze_async(user_input, current_phase, conversation_history)
         else:

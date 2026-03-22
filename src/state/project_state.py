@@ -138,6 +138,8 @@ class ProjectState(BaseModel):
     mockups: List[Mockup] = Field(default_factory=list)
     roadmap: Roadmap = Field(default_factory=Roadmap)
     conversation_history: List[dict] = Field(default_factory=list)
+    conversation_summary: str = ""
+    conversation_summary_up_to_index: int = 0
     agent_interactions: Dict[str, int] = Field(default_factory=dict)
     agent_selection_mode: str = "auto"          # "auto" | "manual"
     selected_agent_id: Optional[str] = None     # set in manual mode
