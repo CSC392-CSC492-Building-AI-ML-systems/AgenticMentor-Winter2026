@@ -101,7 +101,6 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   applyStateSnapshot: (snapshot) => {
     if (!snapshot) return
     const reqs = snapshot.requirements
-    const derivedName = reqs?.app_name || reqs?.project_type || snapshot.project_name || null
     const updates: Partial<ProjectStore> = {
       currentPhase: snapshot.current_phase ?? "initialization",
       requirements: reqs ?? null,
@@ -110,7 +109,8 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       mockups: snapshot.mockups ?? [],
       exportArtifacts: snapshot.export_artifacts ?? null,
       nextRecommendedAgentId: snapshot.next_recommended_agent_id ?? null,
-      ...(derivedName ? { projectName: derivedName } : {}),
+      // Only use the user-chosen project_name from the backend — never derive from requirements
+      ...(snapshot.project_name ? { projectName: snapshot.project_name } : {}),
     }
     // Restore conversation history from backend if present
     if (snapshot.conversation_history?.length) {
