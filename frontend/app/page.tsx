@@ -1,9 +1,19 @@
+"use client";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Terminal } from "lucide-react";
 import ThemeToggle from "@/components/layout/ThemeToggle";
 import AuthLink from "@/components/auth/AuthLink";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export default function LandingPage() {
+  const router = useRouter();
+  const idToken = useAuthStore((s) => s.idToken);
+
+  useEffect(() => {
+    if (idToken) router.replace("/dashboard");
+  }, [idToken]);
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-white dark:bg-black text-black dark:text-white font-mono selection:bg-gray-300 dark:selection:bg-gray-200 selection:text-black relative overflow-hidden transition-colors">
       /* Theme Toggle Button - Inverts icon color on theme swap */

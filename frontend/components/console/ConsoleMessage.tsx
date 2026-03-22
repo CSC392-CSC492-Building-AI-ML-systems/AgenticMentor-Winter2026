@@ -1,33 +1,33 @@
-import { Message } from "@/lib/types"; 
+import { Message } from "@/lib/types";
 
 export default function ConsoleMessage({ message }: { message: Message }) {
   const isUser = message.role === "user";
+  const isSystem = message.agentName === "System";
 
-  const getColor = (color?: string) => {
-    switch (color) {
-      case "purple": return "text-purple-600 dark:text-purple-400";
-      case "blue": return "text-blue-600 dark:text-blue-400";
-      case "red": return "text-red-600 dark:text-red-400";
-      case "orange": return "text-orange-600 dark:text-orange-400";
-      case "green": return "text-green-600 dark:text-green-400";
-      default: return "text-black dark:text-white";
-    }
-  };
+  const nameColor = isUser
+    ? "text-blue-500 dark:text-blue-400"
+    : isSystem
+    ? "text-emerald-400 dark:text-emerald-400"
+    : "text-gray-500 dark:text-gray-400";
+
+  const bodyColor = isUser
+    ? "text-gray-800 dark:text-gray-200"
+    : isSystem
+    ? "text-emerald-600 dark:text-emerald-300 font-mono"
+    : "text-gray-600 dark:text-gray-400";
 
   return (
-    <div className="font-mono text-xs sm:text-sm mb-3 flex flex-col sm:flex-row sm:gap-4 leading-relaxed tracking-wide group hover:bg-gray-100 dark:hover:bg-[#111] p-1 -mx-1 transition-colors">
-      <div className="flex-shrink-0 flex gap-3 whitespace-nowrap opacity-80 group-hover:opacity-100 transition-opacity">
-        <span className="text-gray-400 dark:text-gray-500">[{message.timestamp}]</span>
-        {isUser ? (
-          <span className="text-black dark:text-white font-bold w-24 text-right">OPERATOR &gt;</span>
-        ) : (
-          <span className={`${getColor(message.avatarColor)} font-bold w-24 text-right uppercase`}>
-            {message.agentName?.split(" ")[0]} &gt;
-          </span>
-        )}
+    <div className="font-mono text-[13px] mb-5 group hover:bg-gray-50 dark:hover:bg-[#0d0d0d] px-2 py-2 -mx-2 transition-colors rounded">
+      {/* Name + timestamp row */}
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className={`font-bold uppercase tracking-widest text-[11px] ${nameColor}`}>
+          {isUser ? "You" : (message.agentName ?? "Orchestrator")}
+        </span>
+        <span className="text-[10px] text-gray-300 dark:text-gray-600">{message.timestamp}</span>
       </div>
-      <div className={`flex-1 ${isUser ? "text-gray-700 dark:text-gray-300" : "text-black dark:text-white font-bold"}`}>
-        <div className="whitespace-pre-wrap">{message.content}</div>
+      {/* Message body */}
+      <div className={`text-[13px] leading-[1.55] whitespace-pre-wrap pl-1 ${bodyColor}`}>
+        {message.content}
       </div>
     </div>
   );

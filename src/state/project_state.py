@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +64,7 @@ class Sprint(BaseModel):
 class Requirements(BaseModel):
     """Requirements state fragment."""
 
+    app_name: Optional[str] = None
     project_type: Optional[str] = None
     functional: List[str] = Field(default_factory=list)
     non_functional: List[str] = Field(default_factory=list)
@@ -87,7 +88,6 @@ class ArchitectureDefinition(BaseModel):
     system_diagram: Optional[str] = None
     api_design: List[APIEndpoint] = Field(default_factory=list)
     deployment_strategy: Optional[str] = None
-
 
 class Mockup(BaseModel):
     """Design artifact produced by the mockup agent (legacy + rich schema)."""
@@ -122,13 +122,14 @@ class ExportArtifacts(BaseModel):
     saved_path: Optional[str] = None
     generated_formats: List[str] = Field(default_factory=list)
     exported_at: Optional[str] = None
-    history: List[Dict[str, str | List[str]]] = Field(default_factory=list)
+    history: List[Dict[str, Union[str, List[str]]]] = Field(default_factory=list)
 
 
 class ProjectState(BaseModel):
     """Single source of truth for the full project plan."""
 
     session_id: str
+    owner_uid: Optional[str] = None
     project_name: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

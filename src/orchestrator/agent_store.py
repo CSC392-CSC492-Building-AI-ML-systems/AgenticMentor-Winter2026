@@ -70,11 +70,16 @@ AGENT_STORE: list[dict[str, Any]] = [
         "interaction_mode": "functional",
         "supports_selective_regen": False,
         "expensive": False,
-        "requires": ["*"],
+        "requires": ["requirements", "architecture"],
         "produces": ["export"],
         "satisfies_intents": ["export"],
         "target_artifacts": [],
-        "phase_compatibility": ["*"],
+        "phase_compatibility": [
+            "architecture_complete",
+            "planning_complete",
+            "design_complete",
+            "exportable",
+        ],
     },
 ]
 
