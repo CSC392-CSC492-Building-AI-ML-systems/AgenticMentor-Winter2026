@@ -7,20 +7,24 @@ import { useAuthStore } from "@/store/useAuthStore";
 import { getFirebaseAuth } from "@/lib/firebase";
 
 export default function TopNav() {
-  const [isDark, setIsDark] = useState(false);
+  const [isDark, setIsDark] = useState(() =>
+    typeof window !== "undefined" && localStorage.getItem("theme") === "dark"
+  );
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
   const { user, idToken, clearAuth } = useAuthStore();
 
   useEffect(() => {
-    document.documentElement.classList.remove('dark');
-    setIsDark(false);
+    const dark = localStorage.getItem("theme") === "dark";
+    setIsDark(dark);
   }, []);
 
   const toggleTheme = () => {
-    document.documentElement.classList.toggle('dark');
-    setIsDark(!isDark);
+    const next = !isDark;
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("theme", next ? "dark" : "light");
+    setIsDark(next);
   };
 
   useEffect(() => {
