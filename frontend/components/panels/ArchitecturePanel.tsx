@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Network, Copy } from "lucide-react";
 import { useProjectStore } from "@/store/useProjectStore";
 import MermaidDiagram from "./MermaidDiagram";
@@ -9,7 +9,17 @@ export default function ArchitecturePanel() {
   const [copied, setCopied] = useState(false);
   const [leftWidth, setLeftWidth] = useState(320);
   const [activeDiagram, setActiveDiagram] = useState<"system" | "erd">("system");
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
   const isDragging = useRef(false);
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsMobileLayout(window.innerWidth < 1024);
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const startResize = (e: React.MouseEvent) => {
     isDragging.current = true;
@@ -64,7 +74,7 @@ export default function ArchitecturePanel() {
   return (
     <div data-arch-panel className="flex flex-col h-full">
       {/* Header */}
-      <div className="h-10 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 bg-gray-50 dark:bg-black shrink-0 transition-colors">
+      <div className="h-10 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-3 sm:px-4 bg-gray-50 dark:bg-black shrink-0 transition-colors">
         <div className="flex items-center gap-2 text-black dark:text-white">
           <Network size={12} />
           <span className="text-[10px] tracking-widest uppercase font-bold">Architecture_Graph</span>
@@ -74,7 +84,9 @@ export default function ArchitecturePanel() {
             onClick={handleCopy}
             className="text-[10px] font-bold border border-gray-300 dark:border-[#555] px-2 py-1 text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black transition-colors flex items-center gap-1 bg-white dark:bg-transparent"
           >
-            <Copy size={10} /> {copied ? "COPIED" : `COPY_${activeDiagram.toUpperCase()}_DIAGRAM`}
+            <Copy size={10} />
+            <span className="hidden sm:inline">{copied ? "COPIED" : `COPY_${activeDiagram.toUpperCase()}_DIAGRAM`}</span>
+            <span className="sm:hidden">{copied ? "OK" : "COPY"}</span>
           </button>
         )}
       </div>
@@ -97,12 +109,12 @@ export default function ArchitecturePanel() {
 
       {/* Side-by-side layout */}
       {hasData && (
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
 
           {/* Left: Tech Stack + API Design */}
           <div
-            style={{ width: `${leftWidth}px` }}
-            className="shrink-0 overflow-y-auto bg-gray-100 dark:bg-[#0a0a0a] transition-colors"
+            style={isMobileLayout ? undefined : { width: `${leftWidth}px` }}
+            className="shrink-0 overflow-y-auto bg-gray-100 dark:bg-[#0a0a0a] transition-colors lg:max-h-none max-h-[38vh] lg:w-auto w-full"
           >
             <div className="p-5 space-y-5">
               {Object.keys(techStack).length > 0 && (
@@ -150,17 +162,17 @@ export default function ArchitecturePanel() {
           {/* Drag handle */}
           <div
             onMouseDown={startResize}
-            className="w-1.5 shrink-0 cursor-ew-resize bg-gray-200 dark:bg-[#222] hover:bg-black dark:hover:bg-white transition-colors z-10"
+            className="hidden lg:block w-1.5 shrink-0 cursor-ew-resize bg-gray-200 dark:bg-[#222] hover:bg-black dark:hover:bg-white transition-colors z-10"
             title="Drag to resize"
           />
 
           {/* Right: Mermaid diagram */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-[#050505] transition-colors">
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-[#050505] transition-colors">
             {showSystemTab || showErdTab ? (
               <>
-                <div className="px-4 py-2 border-b border-gray-200 dark:border-[#222] flex items-center justify-between gap-2 shrink-0 bg-white dark:bg-[#050505]">
+                <div className="px-3 sm:px-4 py-2 border-b border-gray-200 dark:border-[#222] flex items-center justify-between gap-2 shrink-0 bg-white dark:bg-[#050505]">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Architecture_Diagrams</span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
                     {showSystemTab && (
                       <button
                         onClick={() => setActiveDiagram("system")}
