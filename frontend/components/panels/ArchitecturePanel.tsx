@@ -155,10 +155,10 @@ export default function ArchitecturePanel() {
           />
 
           {/* Right: Mermaid diagram */}
-          <div className="flex-1 overflow-auto bg-white dark:bg-[#050505] transition-colors">
+          <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-[#050505] transition-colors">
             {showSystemTab || showErdTab ? (
               <>
-                <div className="px-4 py-2 border-b border-gray-200 dark:border-[#222] flex items-center justify-between gap-2">
+                <div className="px-4 py-2 border-b border-gray-200 dark:border-[#222] flex items-center justify-between gap-2 shrink-0 bg-white dark:bg-[#050505]">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Architecture_Diagrams</span>
                   <div className="flex items-center gap-2">
                     {showSystemTab && (
@@ -187,11 +187,13 @@ export default function ArchitecturePanel() {
                     )}
                   </div>
                 </div>
-                {visibleDiagram ? <MermaidDiagram chart={visibleDiagram} /> : (
-                  <div className="flex items-center justify-center h-full">
-                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Selected diagram not available</p>
-                  </div>
-                )}
+                <div className="flex-1 overflow-auto">
+                  {visibleDiagram ? <MermaidDiagram chart={visibleDiagram} /> : (
+                    <div className="flex items-center justify-center h-full">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Selected diagram not available</p>
+                    </div>
+                  )}
+                </div>
               </>
             ) : (
               <div className="flex items-center justify-center h-full">
