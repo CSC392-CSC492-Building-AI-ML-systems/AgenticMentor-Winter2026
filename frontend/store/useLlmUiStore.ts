@@ -11,7 +11,7 @@ export type LlmRuntimePayload = {
   has_custom_key?: boolean;
 };
 
-/** Shared UI: open LLM settings from TopNav or console; refresh console model chip after settings close. */
+/** Shared UI: open LLM settings from project console chip; refresh console model chip after settings close. */
 export const useLlmUiStore = create<{
   llmModalOpen: boolean;
   setLlmModalOpen: (open: boolean) => void;

@@ -2,19 +2,16 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Terminal, Settings, User, Sun, Moon, LogOut, Home } from "lucide-react";
+import { Terminal, User, Sun, Moon, LogOut, Home } from "lucide-react";
 import { useAuthStore } from "@/store/useAuthStore";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { fetchWithAuth } from "@/lib/api";
-import LlmSettingsModal from "@/components/settings/LlmSettingsModal";
-import { useLlmUiStore } from "@/store/useLlmUiStore";
 
 export default function TopNav() {
   const [isDark, setIsDark] = useState(() =>
     typeof window !== "undefined" && localStorage.getItem("theme") === "dark"
   );
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const { llmModalOpen, setLlmModalOpen, bumpLlmRuntimeRefresh } = useLlmUiStore();
   const userMenuRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
   const { user, idToken, clearAuth } = useAuthStore();
@@ -56,7 +53,6 @@ export default function TopNav() {
 
 
   return (
-    <>
     <div className="h-12 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 sm:px-6 bg-gray-50 dark:bg-black shrink-0 transition-colors">
 
       {/* LEFT */}
@@ -90,15 +86,6 @@ export default function TopNav() {
 
         <div className="w-px h-4 bg-gray-300 dark:bg-[#555]"></div>
 
-        {/* Settings */}
-        <button
-          onClick={() => setLlmModalOpen(true)}
-          className="text-gray-500 hover:text-black dark:text-gray-200 dark:hover:text-white transition-colors"
-          title="LLM Settings"
-        >
-          <Settings size={14} />
-        </button>
-
         {/* User menu */}
         <div className="relative" ref={userMenuRef}>
           <button
@@ -130,13 +117,5 @@ export default function TopNav() {
         </div>
       </div>
     </div>
-    <LlmSettingsModal
-      open={llmModalOpen}
-      onClose={() => {
-        setLlmModalOpen(false);
-        bumpLlmRuntimeRefresh();
-      }}
-    />
-    </>
   );
 }

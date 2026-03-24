@@ -8,9 +8,11 @@ import ArchitecturePanel from "@/components/panels/ArchitecturePanel";
 import WireframePanel from "@/components/panels/WireframePanel";
 import ExecutionPanel from "@/components/panels/ExecutionPanel";
 import RequireAuth from "@/components/auth/RequireAuth";
+import LlmSettingsModal from "@/components/settings/LlmSettingsModal";
 import { FileDown } from "lucide-react";
 import { useProjectStore } from "@/store/useProjectStore";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useLlmUiStore } from "@/store/useLlmUiStore";
 import { fetchWithAuth } from "@/lib/api";
 
 export default function ProjectPage() {
@@ -20,6 +22,13 @@ export default function ProjectPage() {
 
   const { setProjectId, resetProject, applyStateSnapshot, setAvailableAgents, setIsLoading, exportArtifacts, activeTab, setActiveTab } = useProjectStore();
   const { idToken } = useAuthStore();
+  const { llmModalOpen, setLlmModalOpen, bumpLlmRuntimeRefresh } = useLlmUiStore();
+
+  useEffect(() => {
+    return () => {
+      setLlmModalOpen(false);
+    };
+  }, [setLlmModalOpen]);
 
   useEffect(() => {
     if (!projectId || !idToken) return;
@@ -67,7 +76,14 @@ export default function ProjectPage() {
     <RequireAuth>
     <div className="flex flex-col h-screen w-full bg-white dark:bg-black font-mono selection:bg-gray-300 dark:selection:bg-gray-200 selection:text-black transition-colors">
       <TopNav />
-      
+      <LlmSettingsModal
+        open={llmModalOpen}
+        onClose={() => {
+          setLlmModalOpen(false);
+          bumpLlmRuntimeRefresh();
+        }}
+      />
+
       {/* Scrollable Tab Bar */}
       <div className="flex overflow-x-auto border-b border-gray-300 dark:border-[#444] bg-gray-50 dark:bg-[#050505] flex-shrink-0 [&::-webkit-scrollbar]:hidden transition-colors">
         {tabs.map((tab) => (
