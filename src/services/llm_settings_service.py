@@ -17,9 +17,12 @@ _GEMINI_API_MODEL_ALIASES: dict[str, str] = {
     "gemini-3.1-pro": "gemini-3.1-pro-preview",
     "gemini-3.1-prop": "gemini-3.1-pro-preview",  # common typo
     "gemini-3.1-flash-lite": "gemini-3.1-flash-lite-preview",
-    # 2.0 Flash family (deprecated but still valid ids; shorthand without "2.0")
-    "gemini-2-flash": "gemini-2.0-flash",
-    "gemini-2-flash-lite": "gemini-2.0-flash-lite",
+    # Below 2.5 (deprecated / restricted): map saved or shorthand ids to 2.5+ targets.
+    "gemini-2-flash": "gemini-2.5-flash",
+    "gemini-2.0-flash": "gemini-2.5-flash",
+    "gemini-2-flash-exp": "gemini-2.5-flash",
+    "gemini-2-flash-lite": "gemini-2.5-flash-lite",
+    "gemini-2.0-flash-lite": "gemini-2.5-flash-lite",
 }
 
 
@@ -52,9 +55,16 @@ def sanitize_llm_settings(
         has_custom = custom_key_is_set(owner_uid, project_id)
 
     settings = get_settings()
+    raw_model = payload.get("model")
+    if raw_model is None or (isinstance(raw_model, str) and not str(raw_model).strip()):
+        display_model = None
+    else:
+        s = str(raw_model).strip()
+        display_model = normalize_gemini_model_id(s) or s
+
     return {
         "mode": payload.get("mode", "default"),
-        "model": payload.get("model"),
+        "model": display_model,
         "has_custom_key": has_custom,
         "verified": bool(payload.get("verified", False)),
         "verified_at": payload.get("verified_at"),

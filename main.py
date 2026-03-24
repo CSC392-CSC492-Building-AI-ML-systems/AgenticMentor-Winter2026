@@ -46,6 +46,7 @@ from src.services.llm_custom_key_store import (
     set_custom_key,
 )
 from src.services.llm_settings_service import (
+    normalize_gemini_model_id,
     now_iso,
     public_llm_runtime_view,
     sanitize_llm_settings,
@@ -374,6 +375,8 @@ async def set_llm_settings(
         raise HTTPException(status_code=404, detail="Project not found")
 
     uid = current_user.uid or ""
+    raw_model_req = (request.model or "").strip() or "gemini-2.5-flash"
+    resolved_model = normalize_gemini_model_id(raw_model_req) or raw_model_req
 
     # Backfill owner_uid on older rows so key lookup via project_state stays consistent.
     owner_patch: dict = {}
@@ -386,7 +389,7 @@ async def set_llm_settings(
             **owner_patch,
             "llm_settings": {
                 "mode": "default",
-                "model": request.model,
+                "model": resolved_model,
                 "verified": False,
                 "verified_at": None,
             },
@@ -402,7 +405,7 @@ async def set_llm_settings(
                     **owner_patch,
                     "llm_settings": {
                         "mode": "custom",
-                        "model": request.model,
+                        "model": resolved_model,
                     },
                 }
             else:
@@ -410,7 +413,7 @@ async def set_llm_settings(
                     **owner_patch,
                     "llm_settings": {
                         "mode": "custom",
-                        "model": request.model,
+                        "model": resolved_model,
                         "verified": False,
                         "verified_at": None,
                     },
@@ -425,7 +428,7 @@ async def set_llm_settings(
                     **owner_patch,
                     "llm_settings": {
                         "mode": "custom",
-                        "model": request.model,
+                        "model": resolved_model,
                     },
                 }
             else:
@@ -433,7 +436,7 @@ async def set_llm_settings(
                     **owner_patch,
                     "llm_settings": {
                         "mode": "custom",
-                        "model": request.model,
+                        "model": resolved_model,
                         "verified": False,
                         "verified_at": None,
                     },
@@ -468,13 +471,15 @@ async def verify_llm_settings(
         owner_patch: dict = {}
         if uid and not (getattr(orch_state, "owner_uid", None) or "").strip():
             owner_patch["owner_uid"] = uid
+        raw_model = (request.model or "").strip()
+        resolved_model = normalize_gemini_model_id(raw_model) or raw_model
         updated = await _get_state_manager().update(
             project_id,
             {
                 **owner_patch,
                 "llm_settings": {
                     "mode": "custom",
-                    "model": request.model,
+                    "model": resolved_model,
                     "verified": True,
                     "verified_at": now_iso(),
                 },

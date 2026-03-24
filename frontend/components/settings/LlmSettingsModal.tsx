@@ -14,17 +14,31 @@ interface Props {
 
 /** Must stay in sync with backend `_MIN_APP_DEFAULT_MODELS` / allowed_default_models floor. */
 const MIN_DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-3-flash-preview"];
+/** Gemini 2.5+ only — matches backend `supported_custom_models` defaults. */
 const CUSTOM_MODEL_FALLBACK = [
   "gemini-2.5-flash",
   "gemini-3-flash-preview",
-  "gemini-2.0-flash",
   "gemini-2.5-pro",
-  "gemini-2-flash-exp",
-  "gemini-2.0-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-3.1-pro-preview",
   "gemini-3.1-flash-lite-preview",
 ];
+
+/** Drop deprecated / sub-2.5 ids if the API still returns them (stale server or env). */
+function isGemini25OrNewerModelId(modelId: string): boolean {
+  const m = (modelId || "").trim();
+  if (!m.startsWith("gemini-")) return false;
+  const prefixes = [
+    "gemini-2.5-",
+    "gemini-2.6-",
+    "gemini-2.7-",
+    "gemini-3-",
+    "gemini-3.",
+    "gemini-4-",
+    "gemini-4.",
+  ];
+  return prefixes.some((p) => m.startsWith(p));
+}
 
 interface LlmSettingsPayload {
   mode: "default" | "custom";
@@ -67,10 +81,12 @@ export default function LlmSettingsModal({ open, onClose }: Props) {
         setModel(payload.model || "gemini-2.5-flash");
         setHasStoredKey(payload.has_custom_key);
         setVerified(payload.verified);
-        const apiDefaults = payload.allowed_default_models ?? [];
+        const apiDefaults = (payload.allowed_default_models ?? []).filter(isGemini25OrNewerModelId);
         setDefaultModels([...new Set([...MIN_DEFAULT_MODELS, ...apiDefaults])]);
-        const apiCustom = payload.supported_custom_models ?? [];
-        setCustomModels(apiCustom.length ? [...new Set([...CUSTOM_MODEL_FALLBACK, ...apiCustom])] : CUSTOM_MODEL_FALLBACK);
+        const apiCustom = (payload.supported_custom_models ?? []).filter(isGemini25OrNewerModelId);
+        setCustomModels(
+          apiCustom.length ? [...new Set([...CUSTOM_MODEL_FALLBACK, ...apiCustom])] : [...CUSTOM_MODEL_FALLBACK]
+        );
       })
       .catch((err) => setMessage(`Failed to load settings: ${err.message}`))
       .finally(() => setLoading(false));

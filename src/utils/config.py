@@ -12,6 +12,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Note: Google AI Studio uses gemini-3-flash-preview for the Gemini 3 Flash API id (not gemini-3-flash).
 _MIN_APP_DEFAULT_MODELS: tuple[str, ...] = ("gemini-2.5-flash", "gemini-3-flash-preview")
 
+# Custom-key catalog: Gemini 2.5+ only (2.0 family restricted / deprecated for many keys).
+_SUPPORTED_CUSTOM_MODELS_25_PLUS: tuple[str, ...] = (
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
+)
+
+
+def _is_gemini_25_or_newer_model_id(model_id: str) -> bool:
+    m = (model_id or "").strip()
+    if not m.startswith("gemini-"):
+        return False
+    # e.g. gemini-3-flash-preview uses "gemini-3-…"; gemini-3.1-pro-preview uses "gemini-3.…"
+    return any(
+        m.startswith(p)
+        for p in ("gemini-2.5-", "gemini-2.6-", "gemini-2.7-", "gemini-3-", "gemini-3.", "gemini-4-", "gemini-4.")
+    )
+
 
 def _parse_model_list_env(value: Any) -> Any:
     """Parse list fields from env: JSON array, or comma-separated string."""
@@ -60,7 +81,7 @@ class Settings(BaseSettings):
             "gemini-2.0-flash",
             "gemini-2.5-pro",
             "gemini-2-flash-exp",
-            "gemini-2.0-flash-lite",
+            # gemini-2.0-flash-lite removed: not available to new API keys (Google 404).
             "gemini-2.5-flash-lite",
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-lite-preview",
@@ -84,6 +105,12 @@ class Settings(BaseSettings):
                 seen.add(m)
                 merged.append(m)
         self.allowed_default_models = merged
+        return self
+
+    @model_validator(mode="after")
+    def _restrict_supported_custom_models_to_gemini_25_plus(self) -> Settings:
+        filtered = [m for m in self.supported_custom_models if _is_gemini_25_or_newer_model_id(m)]
+        self.supported_custom_models = filtered if filtered else list(_SUPPORTED_CUSTOM_MODELS_25_PLUS)
         return self
 
     # Firebase Authentication configuration
