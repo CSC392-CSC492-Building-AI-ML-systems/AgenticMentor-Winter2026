@@ -20,6 +20,7 @@ from src.orchestrator.execution_plan import ExecutionPlan, Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
 from src.orchestrator.intent_classifier import IntentClassifier
+from src.services.llm_settings_service import resolve_effective_llm_config
 from src.utils.prompt import format_conversation_history
 
 # Error type constants for "no plan" responses.
@@ -148,18 +149,39 @@ def _no_plan_response(
 def _make_llm_if_configured() -> Any:
     """Build a LangChain ChatGoogleGenerativeAI if Gemini API key is set; else None."""
     try:
+        from src.services.llm_settings_service import normalize_gemini_model_id
         from src.utils.config import get_settings
         from langchain_google_genai import ChatGoogleGenerativeAI
         s = get_settings()
         if getattr(s, "gemini_api_key", None):
+            raw = getattr(s, "model_name", "gemini-2.5-flash")
+            model = normalize_gemini_model_id(str(raw or "")) or raw
             return ChatGoogleGenerativeAI(
-                model=getattr(s, "model_name", "gemini-2.5-flash"),
+                model=model,
                 temperature=getattr(s, "model_temperature", 0.2),
                 api_key=s.gemini_api_key,
             )
     except Exception:
         pass
     return None
+
+
+def _make_llm_for_key_model(api_key: str | None, model: str | None, temperature: float = 0.2) -> Any:
+    """Build a request-scoped ChatGoogleGenerativeAI for the given key/model."""
+    try:
+        if not api_key:
+            return None
+        from src.services.llm_settings_service import normalize_gemini_model_id
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        raw = model or "gemini-2.5-flash"
+        resolved = normalize_gemini_model_id(str(raw or "")) or raw
+        return ChatGoogleGenerativeAI(
+            model=resolved,
+            temperature=temperature,
+            google_api_key=api_key,
+        )
+    except Exception:
+        return None
 
 
 class MasterOrchestrator:
@@ -178,6 +200,23 @@ class MasterOrchestrator:
             execution_planner=self.execution_planner,
         )
 
+    def _apply_request_llm_config(self, project_state: Any, owner_uid: str | None = None) -> None:
+        """Apply request-scoped LLM config for orchestrator + agents."""
+        cfg = resolve_effective_llm_config(project_state, owner_uid=owner_uid)
+        req_llm = _make_llm_for_key_model(cfg.get("api_key"), cfg.get("model"), temperature=0.2)
+        self._summary_llm = req_llm
+        # Graph node closes over this intent_classifier object, so mutate in place.
+        self.intent_classifier._llm = req_llm
+        try:
+            from src.orchestrator.intent_classifier import IntentResultModel
+            self.intent_classifier._structured_llm = (
+                req_llm.with_structured_output(IntentResultModel) if req_llm is not None and hasattr(req_llm, "with_structured_output") else None
+            )
+        except Exception:
+            self.intent_classifier._structured_llm = None
+        if hasattr(self.registry, "set_runtime_llm_config"):
+            self.registry.set_runtime_llm_config(cfg.get("api_key"), cfg.get("model"))
+
     async def process_request(
         self,
         user_input: str,
@@ -185,6 +224,7 @@ class MasterOrchestrator:
         *,
         agent_selection_mode: str = "auto",
         selected_agent_id: str | None = None,
+        owner_uid: str | None = None,
     ) -> dict:
         """
         Load state, classify intent (auto) or use selected agent (manual),
@@ -195,6 +235,7 @@ class MasterOrchestrator:
             session_id: Session identifier.
             agent_selection_mode: "auto" (default) or "manual".
             selected_agent_id: Required when mode is "manual"; the agent to run.
+            owner_uid: Authenticated Firebase uid (HTTP layer); used to load custom API keys from memory.
         """
         initial = {"user_input": user_input or "", "session_id": session_id or ""}
         available_agents: list[dict] = []
@@ -203,6 +244,7 @@ class MasterOrchestrator:
         # --- 3.4 Manual mode: bypass graph, build plan directly ---
         if agent_selection_mode == "manual" and selected_agent_id:
             project_state = await self.state.load(session_id)
+            self._apply_request_llm_config(project_state, owner_uid=owner_uid)
             if project_state is None:
                 return {"message": "Session not found.", "state_snapshot": None, "artifacts": [], "intent": None, "plan": None, "project_state": None, "agent_results": [], "available_agents": []}
             available_agents = self._get_available_agents(project_state)
@@ -264,6 +306,7 @@ class MasterOrchestrator:
             graph_result = {"plan": plan, "project_state": project_state, "intent": intent, "error": None}
         else:
             project_state = await self.state.load(session_id)
+            self._apply_request_llm_config(project_state, owner_uid=owner_uid)
             if project_state and self._is_explicit_continue(user_input, project_state):
                 next_agent_id = getattr(project_state, "next_recommended_agent_id", None)
                 entry = get_agent_by_id(next_agent_id) or {}

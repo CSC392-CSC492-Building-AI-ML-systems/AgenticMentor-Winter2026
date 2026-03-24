@@ -5,12 +5,16 @@ import Link from "next/link";
 import { Terminal, Settings, User, Sun, Moon, LogOut, Home } from "lucide-react";
 import { useAuthStore } from "@/store/useAuthStore";
 import { getFirebaseAuth } from "@/lib/firebase";
+import { fetchWithAuth } from "@/lib/api";
+import LlmSettingsModal from "@/components/settings/LlmSettingsModal";
+import { useLlmUiStore } from "@/store/useLlmUiStore";
 
 export default function TopNav() {
   const [isDark, setIsDark] = useState(() =>
     typeof window !== "undefined" && localStorage.getItem("theme") === "dark"
   );
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const { llmModalOpen, setLlmModalOpen, bumpLlmRuntimeRefresh } = useLlmUiStore();
   const userMenuRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
   const { user, idToken, clearAuth } = useAuthStore();
@@ -35,7 +39,14 @@ export default function TopNav() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (idToken) {
+      try {
+        await fetchWithAuth("/auth/clear-llm-keys", { method: "POST", token: idToken });
+      } catch {
+        /* best-effort: still sign out locally */
+      }
+    }
     const auth = getFirebaseAuth();
     if (auth) auth.signOut();
     clearAuth();
@@ -45,7 +56,8 @@ export default function TopNav() {
 
 
   return (
-    <div className="h-12 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 sm:px-6 bg-gray-50 dark:bg-black flex-shrink-0 transition-colors">
+    <>
+    <div className="h-12 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 sm:px-6 bg-gray-50 dark:bg-black shrink-0 transition-colors">
 
       {/* LEFT */}
       <div className="flex items-center gap-4">
@@ -53,7 +65,7 @@ export default function TopNav() {
         <span className="text-xs font-bold tracking-widest text-black dark:text-white uppercase hidden sm:block">
           Command_Center
         </span>
-        <div className="w-[1px] h-4 bg-gray-300 dark:bg-[#555] hidden sm:block"></div>
+        <div className="w-px h-4 bg-gray-300 dark:bg-[#555] hidden sm:block"></div>
         <Link href="/dashboard" className="text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white transition-colors" title="Home">
           <Home size={14} />
         </Link>
@@ -68,7 +80,7 @@ export default function TopNav() {
           {isDark ? <Sun size={14} /> : <Moon size={14} />}
         </button>
 
-        <div className="w-[1px] h-4 bg-gray-300 dark:bg-[#555]"></div>
+        <div className="w-px h-4 bg-gray-300 dark:bg-[#555]"></div>
 
         {/* Status Indicator */}
         <div className="flex items-center gap-2">
@@ -76,10 +88,14 @@ export default function TopNav() {
           <span className="text-[10px] text-black dark:text-white tracking-widest uppercase font-bold hidden sm:block">System Ready</span>
         </div>
 
-        <div className="w-[1px] h-4 bg-gray-300 dark:bg-[#555]"></div>
+        <div className="w-px h-4 bg-gray-300 dark:bg-[#555]"></div>
 
         {/* Settings */}
-        <button className="text-gray-500 hover:text-black dark:text-gray-200 dark:hover:text-white transition-colors">
+        <button
+          onClick={() => setLlmModalOpen(true)}
+          className="text-gray-500 hover:text-black dark:text-gray-200 dark:hover:text-white transition-colors"
+          title="LLM Settings"
+        >
           <Settings size={14} />
         </button>
 
@@ -114,5 +130,13 @@ export default function TopNav() {
         </div>
       </div>
     </div>
+    <LlmSettingsModal
+      open={llmModalOpen}
+      onClose={() => {
+        setLlmModalOpen(false);
+        bumpLlmRuntimeRefresh();
+      }}
+    />
+    </>
   );
 }

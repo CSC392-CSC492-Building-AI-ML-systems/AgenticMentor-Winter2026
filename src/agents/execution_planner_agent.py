@@ -12,6 +12,7 @@ from langgraph.graph import StateGraph, END
 
 from src.agents.base_agent import BaseAgent
 from src.protocols.review_protocol import ReviewResult
+from src.services.llm_settings_service import normalize_gemini_model_id
 from src.utils.config import settings
 from src.state.project_state import (
     ArchitectureDefinition,
@@ -99,8 +100,9 @@ class ExecutionPlannerAgent(BaseAgent):
         # Always require LLM - create one using settings if not provided
         if llm_client is None:
             try:
+                model = normalize_gemini_model_id(settings.model_name) or settings.model_name
                 llm_client = ChatGoogleGenerativeAI(
-                    model=settings.model_name,
+                    model=model,
                     temperature=settings.model_temperature,
                     max_output_tokens=8192,  # task lists can be large; override 4096 default
                     google_api_key=settings.gemini_api_key,

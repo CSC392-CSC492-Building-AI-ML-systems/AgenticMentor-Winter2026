@@ -9,6 +9,7 @@ import json
 import operator
 
 from src.agents.base_agent import BaseAgent
+from src.services.llm_settings_service import normalize_gemini_model_id
 from src.utils.config import settings
 from src.utils.prompt import (
     SYSTEM_PROMPT,
@@ -56,8 +57,9 @@ class RequirementsAgent(BaseAgent):
     def __init__(self, review_config: Optional[dict] = None, llm_client: Any = None):
         """Initialize the agent with LLM and compile the graph."""
         if llm_client is None:
+            model = normalize_gemini_model_id(settings.model_name) or settings.model_name
             llm_client = ChatGoogleGenerativeAI(
-                model=settings.model_name,
+                model=model,
                 temperature=settings.model_temperature,
                 max_tokens=settings.model_max_tokens,
                 google_api_key=settings.gemini_api_key,
