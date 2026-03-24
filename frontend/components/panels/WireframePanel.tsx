@@ -26,12 +26,12 @@ export default function WireframePanel() {
   };
 
   const spec = current ? getSpec(current) : null;
-  const stitchPrompt = current
+  const stitchPrompt = hasData
     ? buildStitchPrompt({
         projectName,
         requirements,
         architecture,
-        mockup: current,
+        mockups,
       })
     : "";
 
@@ -211,7 +211,7 @@ export default function WireframePanel() {
                       Mockup_Payload
                     </div>
                     <div className="text-[10px] uppercase tracking-widest text-gray-500 dark:text-gray-400 mt-1">
-                      Copy this prompt into Google Stitch to enhance the current mockup.
+                      Copy this prompt into Google Stitch to enhance the full wireframe set for this project.
                     </div>
                   </div>
                   <button
@@ -247,13 +247,13 @@ export default function WireframePanel() {
                         Google_Stitch
                       </div>
                       <div className="text-[10px] uppercase tracking-widest text-gray-500 dark:text-gray-400 mt-1">
-                        Open Stitch in a new tab, then paste the payload and iterate with AI.
+                        Open Stitch in a new tab, then paste the project-level payload and iterate with AI.
                       </div>
                     </div>
                   </div>
 
                   <div className="border border-gray-200 dark:border-[#222] bg-white dark:bg-[#0b0b0b] p-4 text-[10px] uppercase tracking-widest text-gray-600 dark:text-gray-300 leading-5">
-                    The generated payload preserves the current screen purpose, component layout, and interactions while asking Stitch to improve visual polish, hierarchy, spacing, and UX clarity.
+                    The generated payload preserves the full wireframe set, screen purposes, component layouts, and interactions while asking Stitch to improve visual polish, hierarchy, spacing, and UX clarity.
                   </div>
                 </div>
 

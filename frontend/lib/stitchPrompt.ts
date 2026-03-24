@@ -39,7 +39,7 @@ export interface BuildStitchPromptInput {
   projectName?: string | null;
   requirements?: StitchRequirements | null;
   architecture?: StitchArchitecture | null;
-  mockup: StitchMockup;
+  mockups: StitchMockup[];
 }
 
 function summarizeComponent(component: StitchComponent): string {
@@ -57,23 +57,53 @@ function summarizeComponent(component: StitchComponent): string {
   return `${label} (${type})${children}${metadata}`;
 }
 
+function getScreenSpec(mockup: StitchMockup): StitchScreenSpec {
+  return mockup.wireframe_spec ?? {};
+}
+
+function getScreenLabel(mockup: StitchMockup, index: number): string {
+  const spec = getScreenSpec(mockup);
+  return spec.screen_name || mockup.screen_name || spec.screen_id || mockup.screen_id || `Screen ${index + 1}`;
+}
+
+function summarizeScreen(mockup: StitchMockup, index: number): string {
+  const spec = getScreenSpec(mockup);
+  const screenName = getScreenLabel(mockup, index);
+  const screenId = spec.screen_id || mockup.screen_id || `screen-${index + 1}`;
+  const template = spec.template || "custom";
+  const components = Array.isArray(spec.components) ? spec.components : [];
+  const componentSummary = components.length > 0
+    ? components.map((component, componentIndex) => `  ${componentIndex + 1}. ${summarizeComponent(component)}`).join("\n")
+    : "  1. Preserve the current screen structure shown in the existing mockup.";
+  const interactions = Array.isArray(mockup.interactions) && mockup.interactions.length > 0
+    ? mockup.interactions.map((interaction) => `  - ${interaction}`).join("\n")
+    : "  - Maintain the primary user actions implied by the current mockup.";
+  const notes = spec.notes || mockup.user_flow || "No extra screen notes were provided.";
+
+  return `Screen ${index + 1}: ${screenName}
+- Screen id: ${screenId}
+- Screen template: ${template}
+- Structure:
+${componentSummary}
+- Key interactions:
+${interactions}
+- Notes:
+  ${notes}`;
+}
+
 export function buildStitchPrompt({
   projectName,
   requirements,
   architecture,
-  mockup,
+  mockups,
 }: BuildStitchPromptInput): string {
-  const spec = mockup.wireframe_spec ?? {};
-  const screenName = spec.screen_name || mockup.screen_name || mockup.screen_id || "Current Screen";
-  const screenId = spec.screen_id || mockup.screen_id || "current-screen";
-  const template = spec.template || "custom";
-  const components = Array.isArray(spec.components) ? spec.components : [];
-  const componentSummary = components.length > 0
-    ? components.map((component, index) => `${index + 1}. ${summarizeComponent(component)}`).join("\n")
-    : "1. Preserve the current screen structure shown in the existing mockup.";
-  const interactions = Array.isArray(mockup.interactions) && mockup.interactions.length > 0
-    ? mockup.interactions.map((interaction) => `- ${interaction}`).join("\n")
-    : "- Maintain the primary user actions implied by the current mockup.";
+  const projectMockups = Array.isArray(mockups) ? mockups : [];
+  const screenNames = projectMockups.length > 0
+    ? projectMockups.map((mockup, index) => `- ${getScreenLabel(mockup, index)}`).join("\n")
+    : "- Preserve the current product screen flow shown in the mockups.";
+  const screenSummaries = projectMockups.length > 0
+    ? projectMockups.map((mockup, index) => summarizeScreen(mockup, index)).join("\n\n")
+    : "Screen 1: Preserve the current screen structure shown in the existing mockups.";
   const targetUsers = requirements?.target_users?.length
     ? requirements.target_users.slice(0, 5).join(", ")
     : "General end users";
@@ -86,29 +116,30 @@ export function buildStitchPrompt({
   const frontendStack = architecture?.tech_stack?.frontend
     ? `Frontend stack context: ${architecture.tech_stack.frontend}`
     : "Frontend stack context: not specified";
-  const notes = spec.notes || mockup.user_flow || "";
-  const wireframeCodeHint = mockup.wireframe_code
-    ? `\nReference hint: the existing mockup also has a rough wireframe/code representation. Use it as structural inspiration, not as a strict visual limit.`
+  const wireframeCodeHint = projectMockups.some((mockup) => !!mockup.wireframe_code)
+    ? `\nReference hint: some of the existing mockups also have rough wireframe/code representations. Use them as structural inspiration, not as strict visual limits.`
     : "";
 
-  return `Create an enhanced version of an existing product UI mockup in Google Stitch.
+  return `Create an enhanced version of an existing product UI mockup set in Google Stitch.
 
 Project: ${projectName || "Untitled Project"}
 Product type: ${requirements?.project_type || "Web application"}
 Target users: ${targetUsers}
-Screen name: ${screenName}
-Screen id: ${screenId}
-Screen template: ${template}
 ${frontendStack}
 
 Goal:
-Redesign and enhance this specific screen while preserving its original purpose, information hierarchy, and core user flow. Keep it recognizably the same product, but improve the UX and visual polish so it feels more production-ready.
+Redesign and enhance this set of related product screens while preserving each screen's original purpose, information hierarchy, and core user flow. Keep it recognizably the same product, but improve the UX and visual polish so it feels more production-ready and consistent across the whole flow.
 
-Current screen structure:
-${componentSummary}
+Screens in scope:
+${screenNames}
 
-Key interactions to preserve:
-${interactions}
+Current wireframe set:
+${screenSummaries}
+
+System-level expectation:
+- Treat these screens as one coherent product flow, not isolated mockups.
+- Keep navigation, hierarchy, and visual language consistent across all screens.
+- Preserve the intent of each screen while improving the overall design system cohesion.
 
 Functional context:
 ${functionalRequirements}
@@ -121,16 +152,17 @@ Design direction:
 - Improve spacing, typography hierarchy, alignment, and visual rhythm.
 - Make the layout feel cleaner, more modern, and easier to scan.
 - Upgrade the component styling, states, and call-to-action emphasis.
-- Preserve the semantic purpose of each section and control.
+- Preserve the semantic purpose of each section and control on every screen.
 - If useful, add subtle supporting UI elements that improve clarity without changing the screen's purpose.
 - Maintain consistency with the existing product context and adjacent screens.
+- Introduce a coherent visual system shared across the wireframe set.
 
 Additional context:
-${notes || "No extra screen notes were provided."}${wireframeCodeHint}
+Use the supplied wireframes as the source of truth for screen purpose and structure.${wireframeCodeHint}
 
 What to generate:
-- A refined version of this screen
-- Better visual hierarchy and spacing
+- A refined multi-screen version of this product flow
+- Better visual hierarchy and spacing across all screens
 - More polished components and interactions
-- A result that still maps clearly back to the original mockup`;
+- A result that still maps clearly back to the original mockup set`;
 }
