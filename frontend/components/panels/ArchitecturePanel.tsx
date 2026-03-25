@@ -57,19 +57,24 @@ export default function ArchitecturePanel() {
     Object.keys(techStack).length ||
     apiEndpoints.length
   );
-  const visibleDiagram = activeDiagram === "system" ? diagram : erdDiagram;
+  const showSystemTab = !!diagram;
+  const showErdTab = !!erdDiagram;
+  const effectiveActiveDiagram: "system" | "erd" =
+    activeDiagram === "system" && !showSystemTab && showErdTab
+      ? "erd"
+      : activeDiagram === "erd" && !showErdTab && showSystemTab
+      ? "system"
+      : activeDiagram;
+  const visibleDiagram = effectiveActiveDiagram === "system" ? diagram : erdDiagram;
 
   const handleCopy = () => {
-    const contentToCopy = activeDiagram === "system" ? diagram : erdDiagram;
+    const contentToCopy = effectiveActiveDiagram === "system" ? diagram : erdDiagram;
     if (contentToCopy) {
       navigator.clipboard.writeText(contentToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }
   };
-
-  const showSystemTab = !!diagram;
-  const showErdTab = !!erdDiagram;
 
   return (
     <div data-arch-panel className="flex flex-col h-full">
@@ -85,7 +90,7 @@ export default function ArchitecturePanel() {
             className="text-[10px] font-bold border border-gray-300 dark:border-[#555] px-2 py-1 text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black transition-colors flex items-center gap-1 bg-white dark:bg-transparent"
           >
             <Copy size={10} />
-            <span className="hidden sm:inline">{copied ? "COPIED" : `COPY_${activeDiagram.toUpperCase()}_DIAGRAM`}</span>
+            <span className="hidden sm:inline">{copied ? "COPIED" : `COPY_${effectiveActiveDiagram.toUpperCase()}_DIAGRAM`}</span>
             <span className="sm:hidden">{copied ? "OK" : "COPY"}</span>
           </button>
         )}
@@ -177,7 +182,7 @@ export default function ArchitecturePanel() {
                       <button
                         onClick={() => setActiveDiagram("system")}
                         className={`text-[9px] px-2 py-1 border uppercase tracking-widest font-bold transition-colors ${
-                          activeDiagram === "system"
+                          effectiveActiveDiagram === "system"
                             ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
                             : "border-gray-300 dark:border-[#555] text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black"
                         }`}
@@ -189,7 +194,7 @@ export default function ArchitecturePanel() {
                       <button
                         onClick={() => setActiveDiagram("erd")}
                         className={`text-[9px] px-2 py-1 border uppercase tracking-widest font-bold transition-colors ${
-                          activeDiagram === "erd"
+                          effectiveActiveDiagram === "erd"
                             ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
                             : "border-gray-300 dark:border-[#555] text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black"
                         }`}

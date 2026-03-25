@@ -109,7 +109,7 @@ export default function ProjectPage() {
         {/* Toggle Button (kept fixed so it stays reachable on small screens) */}
         <button
           onClick={() => setConsoleOpen((v) => !v)}
-          className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-white dark:bg-black border border-gray-300 dark:border-[#444] text-black dark:text-white text-[10px] font-bold uppercase tracking-widest px-1 py-3 hover:bg-gray-100 dark:hover:bg-[#111] transition-all"
+          className="fixed right-0 top-1/2 -translate-y-1/2 z-40 bg-white dark:bg-black border border-gray-300 dark:border-[#444] text-black dark:text-white text-[10px] font-bold uppercase tracking-widest px-1 py-3 hover:bg-gray-100 dark:hover:bg-[#111] transition-all"
           title={consoleOpen ? "Close console" : "Open console"}
           aria-label={consoleOpen ? "Close console" : "Open console"}
         >
