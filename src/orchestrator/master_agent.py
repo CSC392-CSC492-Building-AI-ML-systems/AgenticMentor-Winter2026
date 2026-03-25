@@ -190,6 +190,8 @@ class MasterOrchestrator:
     def __init__(self, state_manager: Any, agent_registry: Any = None, *, use_llm: bool = True):
         self.state = state_manager
         self.registry = agent_registry if agent_registry is not None else AgentRegistry(state_manager)
+        self._use_llm = use_llm
+        self._chat_lock = asyncio.Lock()
         llm = _make_llm_if_configured() if use_llm else None
         self._summary_llm = llm
         self.intent_classifier = IntentClassifier(llm=llm)
@@ -203,8 +205,12 @@ class MasterOrchestrator:
     def _apply_request_llm_config(self, project_state: Any, owner_uid: str | None = None) -> None:
         """Apply request-scoped LLM config for orchestrator + agents."""
         cfg = resolve_effective_llm_config(project_state, owner_uid=owner_uid)
+        if hasattr(self.registry, "set_runtime_llm_config"):
+            self.registry.set_runtime_llm_config(cfg.get("api_key"), cfg.get("model"))
         req_llm = _make_llm_for_key_model(cfg.get("api_key"), cfg.get("model"), temperature=0.2)
         self._summary_llm = req_llm
+        if not hasattr(self, "intent_classifier"):
+            return
         # Graph node closes over this intent_classifier object, so mutate in place.
         self.intent_classifier._llm = req_llm
         try:
@@ -214,10 +220,54 @@ class MasterOrchestrator:
             )
         except Exception:
             self.intent_classifier._structured_llm = None
-        if hasattr(self.registry, "set_runtime_llm_config"):
-            self.registry.set_runtime_llm_config(cfg.get("api_key"), cfg.get("model"))
+
+    def _restore_default_llm_config(self) -> None:
+        """Clear per-request registry overrides and revert shared LLM clients to server defaults."""
+        if hasattr(self.registry, "clear_runtime_llm_config"):
+            self.registry.clear_runtime_llm_config()
+        if not hasattr(self, "intent_classifier"):
+            return
+        llm = _make_llm_if_configured() if getattr(self, "_use_llm", True) else None
+        self._summary_llm = llm
+        self.intent_classifier._llm = llm
+        try:
+            from src.orchestrator.intent_classifier import IntentResultModel
+
+            self.intent_classifier._structured_llm = (
+                llm.with_structured_output(IntentResultModel)
+                if llm is not None and hasattr(llm, "with_structured_output")
+                else None
+            )
+        except Exception:
+            self.intent_classifier._structured_llm = None
 
     async def process_request(
+        self,
+        user_input: str,
+        session_id: str,
+        *,
+        agent_selection_mode: str = "auto",
+        selected_agent_id: str | None = None,
+        owner_uid: str | None = None,
+    ) -> dict:
+        """Serialize chat handling and always reset LLM overrides so keys/models cannot leak across requests."""
+        if not hasattr(self, "_chat_lock"):
+            self._chat_lock = asyncio.Lock()
+        if not hasattr(self, "_use_llm"):
+            self._use_llm = True
+        async with self._chat_lock:
+            try:
+                return await self._process_request_impl(
+                    user_input,
+                    session_id,
+                    agent_selection_mode=agent_selection_mode,
+                    selected_agent_id=selected_agent_id,
+                    owner_uid=owner_uid,
+                )
+            finally:
+                self._restore_default_llm_config()
+
+    async def _process_request_impl(
         self,
         user_input: str,
         session_id: str,

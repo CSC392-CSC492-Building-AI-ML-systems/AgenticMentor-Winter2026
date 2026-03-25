@@ -131,6 +131,8 @@ async def test_master_orchestrator_process_request(mock_state_manager):
 async def test_master_orchestrator_export_intent(mock_state_manager):
     """Process_request with export message -> intent export, plan has exporter."""
     orch = MasterOrchestrator(mock_state_manager, use_llm=False)
+    st = await mock_state_manager.load("s1")
+    st.current_phase = "design_complete"
     out = await orch.process_request("export the document to PDF", "s1")
     assert out["intent"]["primary_intent"] == "export"
     agent_ids = [t.agent_id for t in out["plan"].tasks]
