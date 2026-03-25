@@ -19,7 +19,7 @@ from src.orchestrator.agent_store import (
 from src.orchestrator.execution_plan import ExecutionPlan, Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
-from src.orchestrator.intent_classifier import IntentClassifier
+from src.orchestrator.intent_classifier import IntentClassifier, user_message_implies_full_stack_refresh
 from src.utils.prompt import format_conversation_history
 
 # Error type constants for "no plan" responses.
@@ -56,6 +56,15 @@ AUTO_FLOW_SEQUENCE = (
     "mockup_agent",
     "exporter",
 )
+
+# Phases where the initial checkpointed pipeline has produced a roadmap at least once.
+_BASELINE_PHASES = frozenset({"planning_complete", "design_complete", "exportable"})
+
+
+def _project_baseline_complete(project_state: Any) -> bool:
+    """True after execution planning has completed at least once (checkpointed bootstrap done)."""
+    phase = getattr(project_state, "current_phase", "initialization") or "initialization"
+    return phase in _BASELINE_PHASES
 
 
 def _no_plan_message(error_type: str, intent: dict | None, project_state: Any) -> str:
@@ -376,7 +385,18 @@ class MasterOrchestrator:
             intent_primary = (intent or {}).get("primary_intent", "").strip()
             if intent_primary == "update":
                 tasks_to_run = planned_tasks
+            elif intent_primary == "workflow_continue":
+                tasks_to_run = planned_tasks
+            elif len(planned_tasks) <= 1:
+                tasks_to_run = planned_tasks
+            elif _project_baseline_complete(project_state) and (
+                (intent or {}).get("full_stack_refresh")
+                or user_message_implies_full_stack_refresh(user_input or "")
+            ):
+                # After bootstrap: explicit full refresh → run the whole planned chain in one turn.
+                tasks_to_run = planned_tasks
             else:
+                # First pass / narrow create: one agent per request (say continue between steps).
                 tasks_to_run = planned_tasks[:1]
         results = []
         agent_results = []
@@ -468,8 +488,20 @@ class MasterOrchestrator:
         current_step = None
         next_step = None
         if agent_selection_mode == "auto" and tasks_to_run:
-            executed = agent_results[0] if agent_results else None
-            remaining_plan = planned_tasks[1:]
+            # Align remaining work with tasks actually executed this turn (prefix of planned_tasks).
+            first_fail_idx: int | None = None
+            n = min(len(tasks_to_run), len(agent_results))
+            for i in range(n):
+                if agent_results[i].get("status") != "success":
+                    first_fail_idx = i
+                    break
+            if first_fail_idx is not None:
+                executed = agent_results[first_fail_idx]
+                remaining_plan = list(planned_tasks[first_fail_idx:])
+            else:
+                k = len(tasks_to_run)
+                executed = agent_results[k - 1] if k and k <= len(agent_results) else None
+                remaining_plan = list(planned_tasks[k:])
             if executed and executed.get("status") == "success":
                 next_agent_id = self._resolve_next_auto_agent_id(
                     executed.get("agent_id"),
@@ -487,10 +519,15 @@ class MasterOrchestrator:
                         "last_auto_plan_agent_ids": [task.agent_id for task in planned_tasks],
                     },
                 )
+                succ_results, succ_agent_results = self._pair_successful_step_results(
+                    tasks_to_run, agent_results, results
+                )
+                multi_ok = len(succ_results) > 1
+                raw_for_summary = succ_results[-1] if succ_results else {}
                 summary_text, summary_source = await self._summarize_single_step(
                     executed,
                     project_state,
-                    results[0] if results else {},
+                    raw_for_summary,
                     next_agent_id,
                 )
                 phase_after = getattr(project_state, "current_phase", None)
@@ -516,9 +553,13 @@ class MasterOrchestrator:
                     }
                 # Decide what the user sees for this step.
                 agent_id = executed.get("agent_id") or ""
+                if multi_ok:
+                    message = self._synthesize_response(succ_results, succ_agent_results)
+                    if next_agent_id:
+                        message = f"{message}\n\nWhen you're ready, say **continue** to move to the next step."
                 # For execution_planner, prefer the orchestrator summary so we can describe the actual roadmap
                 # (phases, milestones, tasks) based on state rather than the agent's terse counts.
-                if agent_id == "execution_planner":
+                elif agent_id == "execution_planner":
                     message = summary_text
                 else:
                     # Prefer agent's actual content when present (conversational always; functional when substantive).
@@ -766,16 +807,36 @@ class MasterOrchestrator:
             parts.append("You can say **continue** to move to the next step, or ask to change something.")
         return " ".join(parts)
 
+    def _pair_successful_step_results(
+        self,
+        tasks_to_run: list[Task],
+        agent_results: list[dict],
+        results: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        """Zip successful agent_results entries with results (only successes append to results)."""
+        succ_r: list[dict] = []
+        succ_ar: list[dict] = []
+        r_idx = 0
+        for i, _task in enumerate(tasks_to_run):
+            if i >= len(agent_results):
+                break
+            ar = agent_results[i]
+            if ar.get("status") == "success":
+                if r_idx < len(results):
+                    succ_r.append(results[r_idx])
+                    succ_ar.append(ar)
+                    r_idx += 1
+        return succ_r, succ_ar
+
     def _resolve_next_auto_agent_id(
         self,
         completed_agent_id: str | None,
         project_state: Any,
         remaining_plan: list[Task],
     ) -> str | None:
-        default_next = self._get_default_next_agent_id(completed_agent_id, project_state)
-        if default_next:
-            return default_next
-        return remaining_plan[0].agent_id if remaining_plan else None
+        if remaining_plan:
+            return remaining_plan[0].agent_id
+        return self._get_default_next_agent_id(completed_agent_id, project_state)
 
     def _get_default_next_agent_id(self, completed_agent_id: str | None, project_state: Any) -> str | None:
         if completed_agent_id not in AUTO_FLOW_SEQUENCE:
