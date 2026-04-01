@@ -91,7 +91,7 @@ export default function WireframePanel() {
 
   return (
     <>
-      <div className="h-10 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 bg-gray-50 dark:bg-black flex-shrink-0 transition-colors">
+      <div className="h-10 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-3 sm:px-4 bg-gray-50 dark:bg-black shrink-0 transition-colors">
         <div className="flex items-center gap-2 text-black dark:text-white">
           <LayoutTemplate size={12} />
           <span className="text-[10px] tracking-widest uppercase font-bold">UI_Mockups</span>
@@ -105,15 +105,15 @@ export default function WireframePanel() {
         )}
       </div>
 
-      <div className="flex-1 overflow-hidden flex bg-white dark:bg-black transition-colors">
+      <div className="flex-1 overflow-hidden flex flex-col lg:flex-row bg-white dark:bg-black transition-colors">
         {/* Sidebar: screen list */}
         {hasData && mockups.length > 1 && (
-          <div className="w-48 border-r border-gray-200 dark:border-[#333] overflow-y-auto flex-shrink-0">
+          <div className="w-full lg:w-48 border-b lg:border-b-0 lg:border-r border-gray-200 dark:border-[#333] overflow-x-auto lg:overflow-y-auto flex lg:block shrink-0">
             {mockups.map((m: any, i: number) => (
               <button
                 key={i}
                 onClick={() => setSelected(i)}
-                className={`w-full text-left px-3 py-3 text-[10px] font-bold uppercase tracking-widest border-b border-gray-100 dark:border-[#222] transition-colors
+                className={`shrink-0 lg:w-full text-left px-3 py-2.5 text-[10px] font-bold uppercase tracking-widest border-r lg:border-r-0 lg:border-b border-gray-100 dark:border-[#222] transition-colors
                   ${selected === i
                     ? "bg-black dark:bg-white text-white dark:text-black"
                     : "text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-[#111]"
@@ -125,7 +125,7 @@ export default function WireframePanel() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-6 flex items-start justify-center">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-6 flex items-start justify-center">
           {isLoading && !hasData && (
             <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest animate-pulse">
               -- LOADING MOCKUPS --
@@ -141,11 +141,17 @@ export default function WireframePanel() {
           )}
 
           {hasData && current && spec && (
-            <div className="w-full" style={{ maxWidth: "min(100%, calc(100vh * 8/9))" }}>
+            <div
+              className="w-full mx-auto max-w-5xl"
+              style={{ maxWidth: "min(100%, 64rem, calc(100vh * 8 / 9))" }}
+            >
               <div className="mb-3 flex justify-end">
                 {stitchTrigger}
               </div>
-              <div style={{ aspectRatio: "6/9", width: "100%", overflow: "hidden" }}>
+              <div
+                className="w-full min-h-[380px] max-h-[min(72vh,900px)] overflow-hidden border border-gray-200 dark:border-[#333]"
+                style={{ aspectRatio: "6 / 9" }}
+              >
                 <WireframeRenderer screen={spec} />
               </div>
             </div>
@@ -277,7 +283,7 @@ export default function WireframePanel() {
       )}
 
       {hasData && (
-        <div className="h-6 border-t border-gray-200 dark:border-[#333] flex items-center px-4 bg-gray-50 dark:bg-[#050505] flex-shrink-0">
+        <div className="h-6 border-t border-gray-200 dark:border-[#333] flex items-center px-4 bg-gray-50 dark:bg-[#050505] shrink-0">
           <span className="text-[9px] text-gray-500 font-mono tracking-widest uppercase">
             Generated_By: Mockup_Rendering_Agent
           </span>
