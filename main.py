@@ -24,6 +24,10 @@ from src.protocols.schemas import (
     EmailPasswordLoginRequest,
     TokenVerificationRequest,
     TokenResponse,
+    LLMSettingsRequest,
+    LLMSettingsResponse,
+    LLMSettingsVerifyRequest,
+    LLMVerifyResponse,
 )
 from src.utils.config import settings
 from src.state.state_manager import StateManager
@@ -34,6 +38,19 @@ from src.auth.firebase_auth import (
     signup_with_email_password,
     login_with_email_password,
     verify_id_token_payload,
+)
+from src.services.llm_custom_key_store import (
+    delete_all_for_user,
+    delete_custom_key,
+    get_custom_key,
+    set_custom_key,
+)
+from src.services.llm_settings_service import (
+    normalize_gemini_model_id,
+    now_iso,
+    public_llm_runtime_view,
+    sanitize_llm_settings,
+    verify_gemini_key_model,
 )
 
 from src.state.persistence import get_default_adapter
@@ -133,6 +150,11 @@ def _orch_state_to_full_response(
         conversation_history=history,
         available_agents=available_agents or [],
         export_artifacts=orch_state.export_artifacts.model_dump() if orch_state.export_artifacts else {},
+        llm_settings=sanitize_llm_settings(
+            getattr(orch_state, "llm_settings", None),
+            owner_uid=getattr(orch_state, "owner_uid", None),
+            project_id=project_id,
+        ),
     )
 
 
@@ -185,6 +207,12 @@ async def auth_verify_token(request: TokenVerificationRequest) -> FirebaseUser:
 async def auth_me(current_user: FirebaseUser = Depends(get_current_user)) -> FirebaseUser:
     """Debug helper: return the currently authenticated Firebase user."""
     return current_user
+
+
+@app.post("/auth/clear-llm-keys", status_code=204)
+async def auth_clear_llm_keys(current_user: FirebaseUser = Depends(get_current_user)) -> None:
+    """Drop all in-memory Gemini keys for this user (call before logout)."""
+    delete_all_for_user(current_user.uid or "")
 
 
 # ---------------------------------------------------------------------------
@@ -272,12 +300,21 @@ async def chat(
             session_id=project_id,
             agent_selection_mode=request.agent_selection_mode,
             selected_agent_id=request.selected_agent_id,
+            owner_uid=current_user.uid,
         )
     except Exception as e:
         print(f"[chat] Orchestrator error: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Orchestrator error: {str(e)}") from e
 
+    orch_state_after = await _get_state_manager().load(project_id)
+    llm_rt = public_llm_runtime_view(orch_state_after, owner_uid=current_user.uid)
+
     state_snapshot = result.get("state_snapshot") or {}
+    # Never expose raw custom API key to frontend.
+    if isinstance(state_snapshot, dict) and "llm_settings" in state_snapshot:
+        llm_settings = state_snapshot.get("llm_settings")
+        if isinstance(llm_settings, dict):
+            llm_settings.pop("custom_api_key", None)
     raw_agent_results = result.get("agent_results") or []
     raw_available_agents = result.get("available_agents") or []
 
@@ -291,7 +328,165 @@ async def chat(
         agent_results=agent_results,
         available_agents=available_agents,
         current_phase=state_snapshot.get("current_phase", "initialization"),
+        llm_runtime=llm_rt,
     )
+
+
+@app.get("/projects/{project_id}/llm-runtime")
+async def get_llm_runtime_ephemeral(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+) -> dict:
+    """Effective model/key source for this project (no secrets). For console UI."""
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return public_llm_runtime_view(orch_state, owner_uid=current_user.uid)
+
+
+@app.get("/projects/{project_id}/llm-settings", response_model=LLMSettingsResponse)
+async def get_llm_settings(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return LLMSettingsResponse(
+        **sanitize_llm_settings(
+            getattr(orch_state, "llm_settings", None),
+            owner_uid=current_user.uid,
+            project_id=project_id,
+        )
+    )
+
+
+@app.post("/projects/{project_id}/llm-settings", response_model=LLMSettingsResponse)
+async def set_llm_settings(
+    project_id: str,
+    request: LLMSettingsRequest,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    uid = current_user.uid or ""
+    raw_model_req = (request.model or "").strip() or "gemini-2.5-flash"
+    resolved_model = normalize_gemini_model_id(raw_model_req) or raw_model_req
+
+    # Backfill owner_uid on older rows so key lookup via project_state stays consistent.
+    owner_patch: dict = {}
+    if uid and not (getattr(orch_state, "owner_uid", None) or "").strip():
+        owner_patch["owner_uid"] = uid
+
+    if request.mode == "default":
+        delete_custom_key(uid, project_id)
+        delta = {
+            **owner_patch,
+            "llm_settings": {
+                "mode": "default",
+                "model": resolved_model,
+                "verified": False,
+                "verified_at": None,
+            },
+        }
+    else:
+        new_key = (request.custom_api_key or "").strip() if request.custom_api_key is not None else ""
+        mem_before = (get_custom_key(uid, project_id) or "").strip()
+        if new_key:
+            set_custom_key(uid, project_id, new_key)
+            # Same key as already in memory (e.g. client resends after Verify). Do not wipe DB flags.
+            if mem_before and new_key == mem_before:
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                    },
+                }
+            else:
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                        "verified": False,
+                        "verified_at": None,
+                    },
+                }
+        else:
+            mem = get_custom_key(uid, project_id)
+            if mem:
+                # Do not send verified/verified_at: merge keeps existing flags. Avoids wiping
+                # verification after "Verify" when user hits Save without re-pasting the key
+                # (race or stale read could set verified=False while key is already in memory).
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                    },
+                }
+            else:
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                        "verified": False,
+                        "verified_at": None,
+                    },
+                }
+
+    updated = await _get_state_manager().update(project_id, delta)
+    return LLMSettingsResponse(
+        **sanitize_llm_settings(
+            getattr(updated, "llm_settings", None),
+            owner_uid=uid,
+            project_id=project_id,
+        )
+    )
+
+
+@app.post("/projects/{project_id}/llm-settings/verify", response_model=LLMVerifyResponse)
+async def verify_llm_settings(
+    project_id: str,
+    request: LLMSettingsVerifyRequest,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    valid, message = await verify_gemini_key_model(request.custom_api_key, request.model)
+    runtime = None
+    if valid:
+        uid = current_user.uid or ""
+        set_custom_key(uid, project_id, (request.custom_api_key or "").strip())
+        owner_patch: dict = {}
+        if uid and not (getattr(orch_state, "owner_uid", None) or "").strip():
+            owner_patch["owner_uid"] = uid
+        raw_model = (request.model or "").strip()
+        resolved_model = normalize_gemini_model_id(raw_model) or raw_model
+        updated = await _get_state_manager().update(
+            project_id,
+            {
+                **owner_patch,
+                "llm_settings": {
+                    "mode": "custom",
+                    "model": resolved_model,
+                    "verified": True,
+                    "verified_at": now_iso(),
+                },
+            },
+        )
+        runtime = public_llm_runtime_view(updated, owner_uid=uid)
+    return LLMVerifyResponse(valid=valid, message=message, runtime=runtime)
 
 
 @app.delete("/projects/{project_id}", status_code=204)
@@ -301,6 +496,7 @@ async def delete_project(
 ):
     """Delete a project and all its data."""
     await _assert_project_owner(project_id, current_user)
+    delete_custom_key(current_user.uid or "", project_id)
     await _get_state_manager().db.delete(project_id)
 
 

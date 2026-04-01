@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from src.agents.base_agent import BaseAgent
+from src.services.llm_settings_service import normalize_gemini_model_id
 from src.utils.config import settings
 from src.state.project_state import ExportArtifacts
 
@@ -299,14 +300,16 @@ class ExporterAgent(BaseAgent):
     state still produces a valid document with only the sections that have data.
     """
 
-    def __init__(self, review_config: Optional[dict] = None) -> None:
-        """Initialize the agent with Gemini LLM."""
-        llm_client = ChatGoogleGenerativeAI(
-            model=settings.model_name,
-            temperature=0.2,
-            max_tokens=settings.model_max_tokens,
-            google_api_key=settings.gemini_api_key,
-        )
+    def __init__(self, review_config: Optional[dict] = None, llm_client: Any = None) -> None:
+        """Initialize the agent with Gemini LLM (injected or from app settings)."""
+        if llm_client is None:
+            model = normalize_gemini_model_id(settings.model_name) or settings.model_name
+            llm_client = ChatGoogleGenerativeAI(
+                model=model,
+                temperature=0.2,
+                max_tokens=settings.model_max_tokens,
+                google_api_key=settings.gemini_api_key,
+            )
         super().__init__(
             name="ExporterAgent",
             llm_client=llm_client,
