@@ -32,7 +32,7 @@ export default function ProjectPage() {
         const res = await fetchWithAuth(`/projects/${projectId}`, { token: idToken });
         if (res.ok) {
           const data = await res.json();
-          applyStateSnapshot(data);
+          applyStateSnapshot(data, { restoreHistory: true });
           if (data.available_agents) setAvailableAgents(data.available_agents);
         }
       } catch (err) {

@@ -53,7 +53,7 @@ interface ProjectStore {
   setNextRecommendedAgentId: (id: string | null) => void
   resetProject: () => void
   /** Apply a full state snapshot from the API response */
-  applyStateSnapshot: (snapshot: any) => void
+  applyStateSnapshot: (snapshot: any, options?: { restoreHistory?: boolean }) => void
 }
 
 export const useProjectStore = create<ProjectStore>((set) => ({
@@ -98,7 +98,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     nextRecommendedAgentId: null,
   }),
 
-  applyStateSnapshot: (snapshot) => {
+  applyStateSnapshot: (snapshot, options = {}) => {
     if (!snapshot) return
     const reqs = snapshot.requirements
     const updates: Partial<ProjectStore> = {
@@ -109,11 +109,10 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       mockups: snapshot.mockups ?? [],
       exportArtifacts: snapshot.export_artifacts ?? null,
       nextRecommendedAgentId: snapshot.next_recommended_agent_id ?? null,
-      // Only use the user-chosen project_name from the backend — never derive from requirements
       ...(snapshot.project_name ? { projectName: snapshot.project_name } : {}),
     }
-    // Restore conversation history from backend if present
-    if (snapshot.conversation_history?.length) {
+    // Only restore conversation history on explicit initial load, not during live chat
+    if (options.restoreHistory && snapshot.conversation_history?.length) {
       const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
       updates.messages = snapshot.conversation_history.map((entry: any, i: number) => ({
         id: `history-${i}`,
