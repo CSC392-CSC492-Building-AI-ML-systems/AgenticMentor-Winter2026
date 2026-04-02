@@ -128,6 +128,9 @@ export default function ConsoleWindow() {
         throw new Error(data.detail || `HTTP ${res.status}`);
       }
 
+      const hadServerHistory =
+        Array.isArray(data.state?.conversation_history) && data.state.conversation_history.length > 0;
+
       if (data.state) applyStateSnapshot(data.state);
       if (data.available_agents) setAvailableAgents(data.available_agents);
       if (data.agent_results) setAgentResults(data.agent_results);
@@ -150,15 +153,32 @@ export default function ConsoleWindow() {
         return `${icon} [${ar.agent_name}] ${ar.status}${detail}`;
       });
 
-      addMessage({
-        id: (Date.now() + 1).toString(),
-        role: "agent",
-        agentName: agent.name,
-        avatarColor: agent.color,
-        content: data.message || "Done.",
-        subLines,
-        timestamp: ts(),
-      });
+      // applyStateSnapshot already rebuilds messages from conversation_history (user + assistant).
+      // Adding another agent bubble here duplicated the orchestrator reply.
+      if (hadServerHistory) {
+        if (subLines.length) {
+          useProjectStore.setState((state) => {
+            const messages = [...state.messages];
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (messages[i].role === "agent") {
+                messages[i] = { ...messages[i], subLines };
+                break;
+              }
+            }
+            return { messages };
+          });
+        }
+      } else {
+        addMessage({
+          id: (Date.now() + 1).toString(),
+          role: "agent",
+          agentName: agent.name,
+          avatarColor: agent.color,
+          content: data.message || "Done.",
+          subLines,
+          timestamp: ts(),
+        });
+      }
     } catch (err: any) {
       addMessage({
         id: (Date.now() + 2).toString(),

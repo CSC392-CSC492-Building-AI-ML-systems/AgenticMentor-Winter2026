@@ -37,8 +37,14 @@ def _compute_update_agents(intent: Any, project_state: Any) -> list[str]:
     if primary_intent != "update" or not target_artifacts:
         return list(intent.get("requires_agents") or [])
 
+    if bool(intent.get("full_stack_refresh")):
+        target_artifacts = ["requirements", "architecture", "roadmap", "mockups"]
+
     normalized = set(target_artifacts)
     agents: list[str] = []
+
+    if "requirements" in normalized:
+        agents.append("requirements_collector")
 
     has_arch = "architecture" in normalized
     has_roadmap = "roadmap" in normalized
