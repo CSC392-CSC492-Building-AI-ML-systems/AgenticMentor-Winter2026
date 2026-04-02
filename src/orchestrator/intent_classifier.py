@@ -66,6 +66,7 @@ class IntentResult(TypedDict, total=False):
     requires_agents: list[str]
     confidence: float
     expand_downstream: bool  # If False, run only requested agents (+ deps); no downstream expansion. Default True.
+    full_stack_refresh: bool  # True → replan full artifact chain (req → arch → roadmap → mockups) on update
 
 
 class IntentResultModel(BaseModel):
@@ -98,6 +99,14 @@ class IntentResultModel(BaseModel):
             "(e.g. 'only update the tech stack', 'just the architecture')."
         ),
     )
+    full_stack_refresh: bool = Field(
+        default=False,
+        description=(
+            "Set True when the user wants to refresh the ENTIRE project (e.g. 'update the full', "
+            "'migrate stack', 'redo everything', 'refresh all deliverables'). "
+            "Use with primary_intent='update' and target all artifacts, or alone for orchestrator to expand."
+        ),
+    )
 
 
 # Max recent conversation turns to include for intent context (user + assistant pairs).
@@ -126,10 +135,48 @@ Rules (apply in order):
 5. General/content request → one or more agents, expand_downstream=true. "Give me a diagram", "what's the tech stack", "show me wireframes" (no file format) → pick the right agent(s); downstream expansion is fine.
 6. Project status/progress question → primary_intent="general_inquiry", target_artifacts=[], requires_agents=[], confidence medium-high. Use this when the user asks about what has been done, where we are in the process, what decisions were made, a summary of the project, or any question the orchestrator can answer from project state alone — WITHOUT needing to run an agent.
 7. True chit-chat with no project relevance → primary_intent="unknown", target_artifacts=[], requires_agents=[], confidence low. Only use unknown when the message has nothing to do with the project at all.
+8. Full project / stack migration refresh → update all core artifacts. If the user says things like "update the full", "full update", "update everything", "refresh everything", "redo the whole project", "migrate from X to Y" (framework/stack change affecting the whole plan), set primary_intent="update", target_artifacts=["requirements","architecture","roadmap","mockups"], requires_agents=[], expand_downstream=false, full_stack_refresh=true. Narrow stack tweaks ("only tech stack", "just the backend") stay single-artifact update with full_stack_refresh=false.
 
 For primary_intent use: create (produce a new artifact), update (refine/regenerate existing artifact), inspect (query state without running agents), export (produce downloadable file), general_inquiry (project status/progress), or unknown.
 
-Output: primary_intent, target_artifacts (list of artifact names: requirements/architecture/roadmap/mockups or [] for export/general/unknown), requires_agents (list of agent ids above), confidence (0.0-1.0), expand_downstream (bool)."""
+Output: primary_intent, target_artifacts (list of artifact names: requirements/architecture/roadmap/mockups or [] for export/general/unknown), requires_agents (list of agent ids above), confidence (0.0-1.0), expand_downstream (bool), full_stack_refresh (bool)."""
+
+
+_FULL_STACK_MESSAGE_PHRASES = (
+    "update the full",
+    "full update",
+    "update everything",
+    "refresh everything",
+    "redo everything",
+    "full refresh",
+    "update all",
+    "whole project",
+    "entire project",
+    "migrate from",
+    "rewrite everything",
+    "redesign everything",
+)
+
+
+def user_message_implies_full_stack_refresh(user_input: str) -> bool:
+    """True when the user message suggests refreshing all core deliverables (heuristic fallback)."""
+    t = (user_input or "").lower().strip()
+    if not t:
+        return False
+    return any(p in t for p in _FULL_STACK_MESSAGE_PHRASES)
+
+
+def apply_full_stack_intent_overrides(user_input: str, result: IntentResult) -> IntentResult:
+    """Map broad refresh phrasing to a full-stack update intent when the classifier missed it."""
+    if not user_message_implies_full_stack_refresh(user_input):
+        return result
+    out: IntentResult = dict(result)
+    out["primary_intent"] = "update"
+    out["target_artifacts"] = ["requirements", "architecture", "roadmap", "mockups"]
+    out["requires_agents"] = []
+    out["expand_downstream"] = False
+    out["full_stack_refresh"] = True
+    return out
 
 
 # When the current message clearly asks for a file/export, prefer export (avoids tie with mockup from context).
@@ -262,17 +309,23 @@ class IntentClassifier:
                 "what features", "what we decided", "overview", "recap",
             ]
             if any(kw in current_text for kw in general_inquiry_keywords):
-                return IntentResult(
-                    primary_intent="general_inquiry",
+                return apply_full_stack_intent_overrides(
+                    user_input,
+                    IntentResult(
+                        primary_intent="general_inquiry",
+                        target_artifacts=[],
+                        requires_agents=[],
+                        confidence=0.7,
+                    ),
+                )
+            return apply_full_stack_intent_overrides(
+                user_input,
+                IntentResult(
+                    primary_intent="unknown",
                     target_artifacts=[],
                     requires_agents=[],
-                    confidence=0.7,
-                )
-            return IntentResult(
-                primary_intent="unknown",
-                target_artifacts=[],
-                requires_agents=[],
-                confidence=0.0,
+                    confidence=0.0,
+                ),
             )
 
         pattern = INTENT_PATTERNS[best_pattern]
@@ -280,11 +333,15 @@ class IntentClassifier:
         primary_intent = pattern.get("primary_intent", "create")
         target_artifacts = list(pattern.get("target_artifacts") or [])
         confidence = min(1.0, 0.3 + 0.2 * (best_current_score if best_current_score > 0 else best_score))
-        return IntentResult(
-            primary_intent=primary_intent,
-            target_artifacts=target_artifacts,
-            requires_agents=list(agents),
-            confidence=confidence,
+        return apply_full_stack_intent_overrides(
+            user_input,
+            IntentResult(
+                primary_intent=primary_intent,
+                target_artifacts=target_artifacts,
+                requires_agents=list(agents),
+                confidence=confidence,
+                expand_downstream=True,
+            ),
         )
 
     def _build_prompt(
@@ -320,8 +377,11 @@ class IntentClassifier:
             requires_agents=agents,
             confidence=float(getattr(result, "confidence", 0.5)),
             expand_downstream=bool(getattr(result, "expand_downstream", True)),
+            full_stack_refresh=bool(getattr(result, "full_stack_refresh", False)),
         )
-        return _override_export_if_requested(user_input, out, current_phase)
+        return apply_full_stack_intent_overrides(
+            user_input, _override_export_if_requested(user_input, out, current_phase)
+        )
 
     def analyze(
         self,
@@ -344,8 +404,11 @@ class IntentClassifier:
                     return result
             except Exception as exc:
                 _log.warning("LLM intent classify failed: %s", exc)
-        return _override_export_if_requested(
-            user_input, self._analyze_rule_based(user_input, current_phase, conversation_history), current_phase
+        return apply_full_stack_intent_overrides(
+            user_input,
+            _override_export_if_requested(
+                user_input, self._analyze_rule_based(user_input, current_phase, conversation_history), current_phase
+            ),
         )
 
     async def analyze_async(
@@ -365,6 +428,9 @@ class IntentClassifier:
                     return result
             except Exception as exc:
                 _log.warning("LLM intent classify (async) failed: %s", exc)
-        return _override_export_if_requested(
-            user_input, self._analyze_rule_based(user_input, current_phase, conversation_history), current_phase
+        return apply_full_stack_intent_overrides(
+            user_input,
+            _override_export_if_requested(
+                user_input, self._analyze_rule_based(user_input, current_phase, conversation_history), current_phase
+            ),
         )

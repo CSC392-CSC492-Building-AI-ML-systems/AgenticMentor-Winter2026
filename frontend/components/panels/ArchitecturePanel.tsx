@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Network, Copy } from "lucide-react";
 import { useProjectStore } from "@/store/useProjectStore";
 import MermaidDiagram from "./MermaidDiagram";
@@ -8,7 +8,18 @@ export default function ArchitecturePanel() {
   const { architecture, isLoading } = useProjectStore();
   const [copied, setCopied] = useState(false);
   const [leftWidth, setLeftWidth] = useState(320);
+  const [activeDiagram, setActiveDiagram] = useState<"system" | "erd">("system");
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
   const isDragging = useRef(false);
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsMobileLayout(window.innerWidth < 1024);
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const startResize = (e: React.MouseEvent) => {
     isDragging.current = true;
@@ -37,13 +48,29 @@ export default function ArchitecturePanel() {
   };
 
   const diagram: string = architecture?.system_diagram ?? "";
+  const erdDiagram: string = architecture?.data_schema ?? "";
   const techStack: Record<string, string> = architecture?.tech_stack ?? {};
   const apiEndpoints: any[] = architecture?.api_design ?? [];
-  const hasData = !!(diagram || Object.keys(techStack).length || apiEndpoints.length);
+  const hasData = !!(
+    diagram ||
+    erdDiagram ||
+    Object.keys(techStack).length ||
+    apiEndpoints.length
+  );
+  const showSystemTab = !!diagram;
+  const showErdTab = !!erdDiagram;
+  const effectiveActiveDiagram: "system" | "erd" =
+    activeDiagram === "system" && !showSystemTab && showErdTab
+      ? "erd"
+      : activeDiagram === "erd" && !showErdTab && showSystemTab
+      ? "system"
+      : activeDiagram;
+  const visibleDiagram = effectiveActiveDiagram === "system" ? diagram : erdDiagram;
 
   const handleCopy = () => {
-    if (diagram) {
-      navigator.clipboard.writeText(diagram);
+    const contentToCopy = effectiveActiveDiagram === "system" ? diagram : erdDiagram;
+    if (contentToCopy) {
+      navigator.clipboard.writeText(contentToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }
@@ -52,17 +79,19 @@ export default function ArchitecturePanel() {
   return (
     <div data-arch-panel className="flex flex-col h-full">
       {/* Header */}
-      <div className="h-10 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 bg-gray-50 dark:bg-black flex-shrink-0 transition-colors">
+      <div className="h-10 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-3 sm:px-4 bg-gray-50 dark:bg-black shrink-0 transition-colors">
         <div className="flex items-center gap-2 text-black dark:text-white">
           <Network size={12} />
           <span className="text-[10px] tracking-widest uppercase font-bold">Architecture_Graph</span>
         </div>
-        {hasData && diagram && (
+        {hasData && (showSystemTab || showErdTab) && (
           <button
             onClick={handleCopy}
             className="text-[10px] font-bold border border-gray-300 dark:border-[#555] px-2 py-1 text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black transition-colors flex items-center gap-1 bg-white dark:bg-transparent"
           >
-            <Copy size={10} /> {copied ? "COPIED" : "COPY_MERMAID"}
+            <Copy size={10} />
+            <span className="hidden sm:inline">{copied ? "COPIED" : `COPY_${effectiveActiveDiagram.toUpperCase()}_DIAGRAM`}</span>
+            <span className="sm:hidden">{copied ? "OK" : "COPY"}</span>
           </button>
         )}
       </div>
@@ -85,12 +114,12 @@ export default function ArchitecturePanel() {
 
       {/* Side-by-side layout */}
       {hasData && (
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
 
           {/* Left: Tech Stack + API Design */}
           <div
-            style={{ width: `${leftWidth}px` }}
-            className="flex-shrink-0 overflow-y-auto bg-gray-100 dark:bg-[#0a0a0a] transition-colors"
+            style={isMobileLayout ? undefined : { width: `${leftWidth}px` }}
+            className="shrink-0 overflow-y-auto bg-gray-100 dark:bg-[#0a0a0a] transition-colors lg:max-h-none max-h-[38vh] lg:w-auto w-full"
           >
             <div className="p-5 space-y-5">
               {Object.keys(techStack).length > 0 && (
@@ -131,24 +160,57 @@ export default function ArchitecturePanel() {
                   </div>
                 </div>
               )}
+
             </div>
           </div>
 
           {/* Drag handle */}
           <div
             onMouseDown={startResize}
-            className="w-1.5 flex-shrink-0 cursor-ew-resize bg-gray-200 dark:bg-[#222] hover:bg-black dark:hover:bg-white transition-colors z-10"
+            className="hidden lg:block w-1.5 shrink-0 cursor-ew-resize bg-gray-200 dark:bg-[#222] hover:bg-black dark:hover:bg-white transition-colors z-10"
             title="Drag to resize"
           />
 
           {/* Right: Mermaid diagram */}
-          <div className="flex-1 overflow-auto bg-white dark:bg-[#050505] transition-colors">
-            {diagram ? (
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-[#050505] transition-colors">
+            {showSystemTab || showErdTab ? (
               <>
-                <div className="px-4 py-2 border-b border-gray-200 dark:border-[#222] flex items-center">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">System_Diagram</span>
+                <div className="px-3 sm:px-4 py-2 border-b border-gray-200 dark:border-[#222] flex items-center justify-between gap-2 shrink-0 bg-white dark:bg-[#050505]">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Architecture_Diagrams</span>
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    {showSystemTab && (
+                      <button
+                        onClick={() => setActiveDiagram("system")}
+                        className={`text-[9px] px-2 py-1 border uppercase tracking-widest font-bold transition-colors ${
+                          effectiveActiveDiagram === "system"
+                            ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
+                            : "border-gray-300 dark:border-[#555] text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black"
+                        }`}
+                      >
+                        System
+                      </button>
+                    )}
+                    {showErdTab && (
+                      <button
+                        onClick={() => setActiveDiagram("erd")}
+                        className={`text-[9px] px-2 py-1 border uppercase tracking-widest font-bold transition-colors ${
+                          effectiveActiveDiagram === "erd"
+                            ? "border-black dark:border-white bg-black dark:bg-white text-white dark:text-black"
+                            : "border-gray-300 dark:border-[#555] text-gray-600 dark:text-gray-300 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black"
+                        }`}
+                      >
+                        ERD
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <MermaidDiagram chart={diagram} />
+                <div className="flex-1 overflow-auto">
+                  {visibleDiagram ? <MermaidDiagram chart={visibleDiagram} /> : (
+                    <div className="flex items-center justify-center h-full">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Selected diagram not available</p>
+                    </div>
+                  )}
+                </div>
               </>
             ) : (
               <div className="flex items-center justify-center h-full">

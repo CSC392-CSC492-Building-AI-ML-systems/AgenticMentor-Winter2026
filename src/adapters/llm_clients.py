@@ -8,6 +8,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
+from src.services.llm_settings_service import normalize_gemini_model_id
+
 
 class LLMClient(Protocol):
     """Protocol for agent LLM clients."""
@@ -28,8 +30,9 @@ class GeminiClient:
         temperature: float = 0.0,
         google_api_key: str | None = None,
     ):
+        resolved = normalize_gemini_model_id(model) or model
         self.llm = ChatGoogleGenerativeAI(
-            model=model,
+            model=resolved,
             temperature=temperature,
             google_api_key=google_api_key,
         )

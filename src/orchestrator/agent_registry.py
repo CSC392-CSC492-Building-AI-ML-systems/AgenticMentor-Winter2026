@@ -14,9 +14,24 @@ class AgentRegistry:
     def __init__(self, state_manager: Any):
         self._state_manager = state_manager
         self._cache: dict[str, Any] = {}
+        self._runtime_llm: dict[str, str | None] | None = None
+
+    def set_runtime_llm_config(self, api_key: str | None, model: str | None) -> None:
+        """Set per-request key/model override."""
+        self._runtime_llm = {
+            "api_key": (api_key or "").strip() or None,
+            "model": (model or "").strip() or None,
+        }
+
+    def clear_runtime_llm_config(self) -> None:
+        """Clear per-request key/model override."""
+        self._runtime_llm = None
 
     def get_agent(self, agent_id: str) -> Any | None:
         """Return agent instance for agent_id, or None if not implemented. Lazy init and cache."""
+        # Runtime override builds fresh per-request instances (no cache reuse).
+        if self._runtime_llm and self._runtime_llm.get("api_key"):
+            return self._create_agent(agent_id)
         if agent_id in self._cache:
             return self._cache[agent_id]
         agent = self._create_agent(agent_id)
@@ -26,15 +41,19 @@ class AgentRegistry:
 
     def _make_gemini_client(self) -> Any | None:
         try:
-            from src.adapters.llm_clients import GeminiClient
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            from src.services.llm_settings_service import normalize_gemini_model_id
             from src.utils.config import get_settings
 
             settings = get_settings()
-            api_key = getattr(settings, "gemini_api_key", None)
+            runtime = self._runtime_llm or {}
+            api_key = runtime.get("api_key") or getattr(settings, "gemini_api_key", None)
+            raw_model = runtime.get("model") or getattr(settings, "model_name", "gemini-2.5-flash")
+            model = normalize_gemini_model_id(str(raw_model or "")) or raw_model
             if not api_key:
                 return None
-            return GeminiClient(
-                model=getattr(settings, "model_name", "gemini-2.5-flash"),
+            return ChatGoogleGenerativeAI(
+                model=model,
                 temperature=0.2,
                 google_api_key=api_key,
             )
@@ -69,7 +88,8 @@ class AgentRegistry:
         if agent_id == "execution_planner":
             try:
                 from src.agents.execution_planner_agent import ExecutionPlannerAgent
-                return ExecutionPlannerAgent(state_manager=self._state_manager)
+                llm = self._make_gemini_client()
+                return ExecutionPlannerAgent(state_manager=self._state_manager, llm_client=llm)
             except Exception as exc:
                 _log.warning("Failed to create execution_planner: %s", exc)
                 return None
@@ -90,7 +110,11 @@ class AgentRegistry:
 
         if agent_id == "exporter":
             try:
-                from src.agents.exporter_agent import get_agent
+                from src.agents.exporter_agent import ExporterAgent, get_agent
+
+                llm = self._make_gemini_client()
+                if llm is not None:
+                    return ExporterAgent(llm_client=llm)
                 return get_agent()
             except Exception as exc:
                 _log.warning("Failed to create exporter: %s", exc)

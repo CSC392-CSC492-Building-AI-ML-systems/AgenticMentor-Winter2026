@@ -8,9 +8,11 @@ import ArchitecturePanel from "@/components/panels/ArchitecturePanel";
 import WireframePanel from "@/components/panels/WireframePanel";
 import ExecutionPanel from "@/components/panels/ExecutionPanel";
 import RequireAuth from "@/components/auth/RequireAuth";
+import LlmSettingsModal from "@/components/settings/LlmSettingsModal";
 import { FileDown } from "lucide-react";
 import { useProjectStore } from "@/store/useProjectStore";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useLlmUiStore } from "@/store/useLlmUiStore";
 import { fetchWithAuth } from "@/lib/api";
 
 export default function ProjectPage() {
@@ -20,6 +22,13 @@ export default function ProjectPage() {
 
   const { setProjectId, resetProject, applyStateSnapshot, setAvailableAgents, setIsLoading, exportArtifacts, activeTab, setActiveTab } = useProjectStore();
   const { idToken } = useAuthStore();
+  const { llmModalOpen, setLlmModalOpen, bumpLlmRuntimeRefresh } = useLlmUiStore();
+
+  useEffect(() => {
+    return () => {
+      setLlmModalOpen(false);
+    };
+  }, [setLlmModalOpen]);
 
   useEffect(() => {
     if (!projectId || !idToken) return;
@@ -67,9 +76,16 @@ export default function ProjectPage() {
     <RequireAuth>
     <div className="flex flex-col h-screen w-full bg-white dark:bg-black font-mono selection:bg-gray-300 dark:selection:bg-gray-200 selection:text-black transition-colors">
       <TopNav />
-      
+      <LlmSettingsModal
+        open={llmModalOpen}
+        onClose={() => {
+          setLlmModalOpen(false);
+          bumpLlmRuntimeRefresh();
+        }}
+      />
+
       {/* Scrollable Tab Bar */}
-      <div className="flex overflow-x-auto border-b border-gray-300 dark:border-[#444] bg-gray-50 dark:bg-[#050505] flex-shrink-0 [&::-webkit-scrollbar]:hidden transition-colors">
+      <div className="flex overflow-x-auto border-b border-gray-300 dark:border-[#444] bg-gray-50 dark:bg-[#050505] shrink-0 [&::-webkit-scrollbar]:hidden transition-colors">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -88,7 +104,7 @@ export default function ProjectPage() {
         {exportArtifacts?.markdown_content && (
           <button
             onClick={handleDownload}
-            className="flex items-center gap-2 px-4 py-3 text-[10px] font-bold tracking-widest uppercase whitespace-nowrap border-l border-green-600 bg-green-600 text-white hover:bg-green-700 transition-colors flex-shrink-0"
+            className="flex items-center gap-2 px-4 py-3 text-[10px] font-bold tracking-widest uppercase whitespace-nowrap border-l border-green-600 bg-green-600 text-white hover:bg-green-700 transition-colors shrink-0"
           >
             <FileDown size={12} />
             Export_Spec
@@ -106,18 +122,18 @@ export default function ProjectPage() {
           {activeTab === "mock" && <WireframePanel />}
         </div>
 
-        {/* Toggle Button */}
+        {/* Toggle Button (kept fixed so it stays reachable on small screens) */}
         <button
           onClick={() => setConsoleOpen((v) => !v)}
-          className="absolute top-1/2 -translate-y-1/2 z-50 bg-white dark:bg-black border border-gray-300 dark:border-[#444] text-black dark:text-white text-[10px] font-bold uppercase tracking-widest px-1 py-3 hover:bg-gray-100 dark:hover:bg-[#111] transition-all"
-          style={{ right: consoleOpen ? "380px" : "0px" }}
+          className="fixed right-0 top-1/2 -translate-y-1/2 z-40 bg-white dark:bg-black border border-gray-300 dark:border-[#444] text-black dark:text-white text-[10px] font-bold uppercase tracking-widest px-1 py-3 hover:bg-gray-100 dark:hover:bg-[#111] transition-all"
           title={consoleOpen ? "Close console" : "Open console"}
+          aria-label={consoleOpen ? "Close console" : "Open console"}
         >
           {consoleOpen ? "›" : "‹"}
         </button>
 
         {/* Right Console Sidebar — always mounted to preserve state */}
-        <div className={`flex-shrink-0 border-l border-gray-300 dark:border-[#444] flex flex-col h-full transition-all duration-200 ${consoleOpen ? "w-[380px]" : "w-0 overflow-hidden border-l-0"}`}>
+        <div className={`shrink-0 border-l border-gray-300 dark:border-[#444] flex flex-col h-full transition-all duration-200 ${consoleOpen ? "w-[min(88vw,380px)] sm:w-[380px]" : "w-0 overflow-hidden border-l-0"}`}>
           <ConsoleWindow />
         </div>
       </div>

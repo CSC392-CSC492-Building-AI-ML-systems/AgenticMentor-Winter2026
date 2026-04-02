@@ -19,7 +19,8 @@ from src.orchestrator.agent_store import (
 from src.orchestrator.execution_plan import ExecutionPlan, Task
 from src.orchestrator.execution_planner import ExecutionPlanner
 from src.orchestrator.graph import build_orchestrator_graph
-from src.orchestrator.intent_classifier import IntentClassifier
+from src.orchestrator.intent_classifier import IntentClassifier, user_message_implies_full_stack_refresh
+from src.services.llm_settings_service import resolve_effective_llm_config
 from src.utils.prompt import format_conversation_history
 
 # Error type constants for "no plan" responses.
@@ -56,6 +57,15 @@ AUTO_FLOW_SEQUENCE = (
     "mockup_agent",
     "exporter",
 )
+
+# Phases where the initial checkpointed pipeline has produced a roadmap at least once.
+_BASELINE_PHASES = frozenset({"planning_complete", "design_complete", "exportable"})
+
+
+def _project_baseline_complete(project_state: Any) -> bool:
+    """True after execution planning has completed at least once (checkpointed bootstrap done)."""
+    phase = getattr(project_state, "current_phase", "initialization") or "initialization"
+    return phase in _BASELINE_PHASES
 
 
 def _no_plan_message(error_type: str, intent: dict | None, project_state: Any) -> str:
@@ -148,12 +158,15 @@ def _no_plan_response(
 def _make_llm_if_configured() -> Any:
     """Build a LangChain ChatGoogleGenerativeAI if Gemini API key is set; else None."""
     try:
+        from src.services.llm_settings_service import normalize_gemini_model_id
         from src.utils.config import get_settings
         from langchain_google_genai import ChatGoogleGenerativeAI
         s = get_settings()
         if getattr(s, "gemini_api_key", None):
+            raw = getattr(s, "model_name", "gemini-2.5-flash")
+            model = normalize_gemini_model_id(str(raw or "")) or raw
             return ChatGoogleGenerativeAI(
-                model=getattr(s, "model_name", "gemini-2.5-flash"),
+                model=model,
                 temperature=getattr(s, "model_temperature", 0.2),
                 api_key=s.gemini_api_key,
             )
@@ -162,12 +175,32 @@ def _make_llm_if_configured() -> Any:
     return None
 
 
+def _make_llm_for_key_model(api_key: str | None, model: str | None, temperature: float = 0.2) -> Any:
+    """Build a request-scoped ChatGoogleGenerativeAI for the given key/model."""
+    try:
+        if not api_key:
+            return None
+        from src.services.llm_settings_service import normalize_gemini_model_id
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        raw = model or "gemini-2.5-flash"
+        resolved = normalize_gemini_model_id(str(raw or "")) or raw
+        return ChatGoogleGenerativeAI(
+            model=resolved,
+            temperature=temperature,
+            google_api_key=api_key,
+        )
+    except Exception:
+        return None
+
+
 class MasterOrchestrator:
     """Orchestrator using LangGraph (load_state → classify_intent → build_plan) and optional LangChain LLM for intent."""
 
     def __init__(self, state_manager: Any, agent_registry: Any = None, *, use_llm: bool = True):
         self.state = state_manager
         self.registry = agent_registry if agent_registry is not None else AgentRegistry(state_manager)
+        self._use_llm = use_llm
+        self._chat_lock = asyncio.Lock()
         llm = _make_llm_if_configured() if use_llm else None
         self._summary_llm = llm
         self.intent_classifier = IntentClassifier(llm=llm)
@@ -178,6 +211,45 @@ class MasterOrchestrator:
             execution_planner=self.execution_planner,
         )
 
+    def _apply_request_llm_config(self, project_state: Any, owner_uid: str | None = None) -> None:
+        """Apply request-scoped LLM config for orchestrator + agents."""
+        cfg = resolve_effective_llm_config(project_state, owner_uid=owner_uid)
+        if hasattr(self.registry, "set_runtime_llm_config"):
+            self.registry.set_runtime_llm_config(cfg.get("api_key"), cfg.get("model"))
+        req_llm = _make_llm_for_key_model(cfg.get("api_key"), cfg.get("model"), temperature=0.2)
+        self._summary_llm = req_llm
+        if not hasattr(self, "intent_classifier"):
+            return
+        # Graph node closes over this intent_classifier object, so mutate in place.
+        self.intent_classifier._llm = req_llm
+        try:
+            from src.orchestrator.intent_classifier import IntentResultModel
+            self.intent_classifier._structured_llm = (
+                req_llm.with_structured_output(IntentResultModel) if req_llm is not None and hasattr(req_llm, "with_structured_output") else None
+            )
+        except Exception:
+            self.intent_classifier._structured_llm = None
+
+    def _restore_default_llm_config(self) -> None:
+        """Clear per-request registry overrides and revert shared LLM clients to server defaults."""
+        if hasattr(self.registry, "clear_runtime_llm_config"):
+            self.registry.clear_runtime_llm_config()
+        if not hasattr(self, "intent_classifier"):
+            return
+        llm = _make_llm_if_configured() if getattr(self, "_use_llm", True) else None
+        self._summary_llm = llm
+        self.intent_classifier._llm = llm
+        try:
+            from src.orchestrator.intent_classifier import IntentResultModel
+
+            self.intent_classifier._structured_llm = (
+                llm.with_structured_output(IntentResultModel)
+                if llm is not None and hasattr(llm, "with_structured_output")
+                else None
+            )
+        except Exception:
+            self.intent_classifier._structured_llm = None
+
     async def process_request(
         self,
         user_input: str,
@@ -185,6 +257,33 @@ class MasterOrchestrator:
         *,
         agent_selection_mode: str = "auto",
         selected_agent_id: str | None = None,
+        owner_uid: str | None = None,
+    ) -> dict:
+        """Serialize chat handling and always reset LLM overrides so keys/models cannot leak across requests."""
+        if not hasattr(self, "_chat_lock"):
+            self._chat_lock = asyncio.Lock()
+        if not hasattr(self, "_use_llm"):
+            self._use_llm = True
+        async with self._chat_lock:
+            try:
+                return await self._process_request_impl(
+                    user_input,
+                    session_id,
+                    agent_selection_mode=agent_selection_mode,
+                    selected_agent_id=selected_agent_id,
+                    owner_uid=owner_uid,
+                )
+            finally:
+                self._restore_default_llm_config()
+
+    async def _process_request_impl(
+        self,
+        user_input: str,
+        session_id: str,
+        *,
+        agent_selection_mode: str = "auto",
+        selected_agent_id: str | None = None,
+        owner_uid: str | None = None,
     ) -> dict:
         """
         Load state, classify intent (auto) or use selected agent (manual),
@@ -195,6 +294,7 @@ class MasterOrchestrator:
             session_id: Session identifier.
             agent_selection_mode: "auto" (default) or "manual".
             selected_agent_id: Required when mode is "manual"; the agent to run.
+            owner_uid: Authenticated Firebase uid (HTTP layer); used to load custom API keys from memory.
         """
         initial = {"user_input": user_input or "", "session_id": session_id or ""}
         available_agents: list[dict] = []
@@ -203,6 +303,7 @@ class MasterOrchestrator:
         # --- 3.4 Manual mode: bypass graph, build plan directly ---
         if agent_selection_mode == "manual" and selected_agent_id:
             project_state = await self.state.load(session_id)
+            self._apply_request_llm_config(project_state, owner_uid=owner_uid)
             if project_state is None:
                 return {"message": "Session not found.", "state_snapshot": None, "artifacts": [], "intent": None, "plan": None, "project_state": None, "agent_results": [], "available_agents": []}
             available_agents = self._get_available_agents(project_state)
@@ -264,6 +365,7 @@ class MasterOrchestrator:
             graph_result = {"plan": plan, "project_state": project_state, "intent": intent, "error": None}
         else:
             project_state = await self.state.load(session_id)
+            self._apply_request_llm_config(project_state, owner_uid=owner_uid)
             if project_state and self._is_explicit_continue(user_input, project_state):
                 next_agent_id = getattr(project_state, "next_recommended_agent_id", None)
                 entry = get_agent_by_id(next_agent_id) or {}
@@ -376,7 +478,18 @@ class MasterOrchestrator:
             intent_primary = (intent or {}).get("primary_intent", "").strip()
             if intent_primary == "update":
                 tasks_to_run = planned_tasks
+            elif intent_primary == "workflow_continue":
+                tasks_to_run = planned_tasks
+            elif len(planned_tasks) <= 1:
+                tasks_to_run = planned_tasks
+            elif _project_baseline_complete(project_state) and (
+                (intent or {}).get("full_stack_refresh")
+                or user_message_implies_full_stack_refresh(user_input or "")
+            ):
+                # After bootstrap: explicit full refresh → run the whole planned chain in one turn.
+                tasks_to_run = planned_tasks
             else:
+                # First pass / narrow create: one agent per request (say continue between steps).
                 tasks_to_run = planned_tasks[:1]
         results = []
         agent_results = []
@@ -468,8 +581,20 @@ class MasterOrchestrator:
         current_step = None
         next_step = None
         if agent_selection_mode == "auto" and tasks_to_run:
-            executed = agent_results[0] if agent_results else None
-            remaining_plan = planned_tasks[1:]
+            # Align remaining work with tasks actually executed this turn (prefix of planned_tasks).
+            first_fail_idx: int | None = None
+            n = min(len(tasks_to_run), len(agent_results))
+            for i in range(n):
+                if agent_results[i].get("status") != "success":
+                    first_fail_idx = i
+                    break
+            if first_fail_idx is not None:
+                executed = agent_results[first_fail_idx]
+                remaining_plan = list(planned_tasks[first_fail_idx:])
+            else:
+                k = len(tasks_to_run)
+                executed = agent_results[k - 1] if k and k <= len(agent_results) else None
+                remaining_plan = list(planned_tasks[k:])
             if executed and executed.get("status") == "success":
                 next_agent_id = self._resolve_next_auto_agent_id(
                     executed.get("agent_id"),
@@ -487,10 +612,15 @@ class MasterOrchestrator:
                         "last_auto_plan_agent_ids": [task.agent_id for task in planned_tasks],
                     },
                 )
+                succ_results, succ_agent_results = self._pair_successful_step_results(
+                    tasks_to_run, agent_results, results
+                )
+                multi_ok = len(succ_results) > 1
+                raw_for_summary = succ_results[-1] if succ_results else {}
                 summary_text, summary_source = await self._summarize_single_step(
                     executed,
                     project_state,
-                    results[0] if results else {},
+                    raw_for_summary,
                     next_agent_id,
                 )
                 phase_after = getattr(project_state, "current_phase", None)
@@ -516,9 +646,13 @@ class MasterOrchestrator:
                     }
                 # Decide what the user sees for this step.
                 agent_id = executed.get("agent_id") or ""
+                if multi_ok:
+                    message = self._synthesize_response(succ_results, succ_agent_results)
+                    if next_agent_id:
+                        message = f"{message}\n\nWhen you're ready, say **continue** to move to the next step."
                 # For execution_planner, prefer the orchestrator summary so we can describe the actual roadmap
                 # (phases, milestones, tasks) based on state rather than the agent's terse counts.
-                if agent_id == "execution_planner":
+                elif agent_id == "execution_planner":
                     message = summary_text
                 else:
                     # Prefer agent's actual content when present (conversational always; functional when substantive).
@@ -766,16 +900,36 @@ class MasterOrchestrator:
             parts.append("You can say **continue** to move to the next step, or ask to change something.")
         return " ".join(parts)
 
+    def _pair_successful_step_results(
+        self,
+        tasks_to_run: list[Task],
+        agent_results: list[dict],
+        results: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        """Zip successful agent_results entries with results (only successes append to results)."""
+        succ_r: list[dict] = []
+        succ_ar: list[dict] = []
+        r_idx = 0
+        for i, _task in enumerate(tasks_to_run):
+            if i >= len(agent_results):
+                break
+            ar = agent_results[i]
+            if ar.get("status") == "success":
+                if r_idx < len(results):
+                    succ_r.append(results[r_idx])
+                    succ_ar.append(ar)
+                    r_idx += 1
+        return succ_r, succ_ar
+
     def _resolve_next_auto_agent_id(
         self,
         completed_agent_id: str | None,
         project_state: Any,
         remaining_plan: list[Task],
     ) -> str | None:
-        default_next = self._get_default_next_agent_id(completed_agent_id, project_state)
-        if default_next:
-            return default_next
-        return remaining_plan[0].agent_id if remaining_plan else None
+        if remaining_plan:
+            return remaining_plan[0].agent_id
+        return self._get_default_next_agent_id(completed_agent_id, project_state)
 
     def _get_default_next_agent_id(self, completed_agent_id: str | None, project_state: Any) -> str | None:
         if completed_agent_id not in AUTO_FLOW_SEQUENCE:

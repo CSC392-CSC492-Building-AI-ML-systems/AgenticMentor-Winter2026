@@ -108,6 +108,14 @@ class SupabaseAdapter:
                 "architecture": project["architecture"],
                 "roadmap": project["roadmap"],
                 "export_artifacts": project["export_artifacts"],
+                "llm_settings": project.get("llm_settings")
+                if isinstance(project.get("llm_settings"), dict)
+                else {
+                    "mode": "default",
+                    "model": None,
+                    "verified": False,
+                    "verified_at": None,
+                },
                 "conversation_history": [
                     {
                         "role": msg["role"],
@@ -163,6 +171,13 @@ class SupabaseAdapter:
                 "architecture": state_dict.get("architecture", {}),
                 "roadmap": state_dict.get("roadmap", {}),
                 "export_artifacts": state_dict.get("export_artifacts", {}),
+                "llm_settings": state_dict.get("llm_settings")
+                or {
+                    "mode": "default",
+                    "model": None,
+                    "verified": False,
+                    "verified_at": None,
+                },
             }
             
             self.client.table("projects").upsert(project_data).execute()
