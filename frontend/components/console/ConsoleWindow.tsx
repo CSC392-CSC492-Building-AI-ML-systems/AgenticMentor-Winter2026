@@ -4,6 +4,7 @@ import ConsoleMessage from "./ConsoleMessage";
 import ConsoleInput from "./ConsoleInput";
 import { useProjectStore } from "@/store/useProjectStore";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useLlmUiStore, type LlmRuntimePayload } from "@/store/useLlmUiStore";
 import { fetchWithAuth } from "@/lib/api";
 
 const AGENT_ID_MAP: Record<string, string> = {
@@ -21,6 +22,30 @@ const AGENT_TAB_MAP: Record<string, string> = {
   mockup_agent: "mock",
 };
 
+function formatLlmChipLine(data: LlmRuntimePayload): string {
+  const effModel = String(data.model ?? "").trim();
+  const src = String(data.source ?? "");
+  const savedMode = data.saved_mode != null ? String(data.saved_mode) : "";
+  const savedModel = data.saved_model != null ? String(data.saved_model).trim() : "";
+  const usingCustom = src === "custom";
+  const modelStr = usingCustom
+    ? effModel
+    : savedMode === "custom" && savedModel
+      ? savedModel
+      : effModel;
+  const savedVerified = Boolean(data.saved_verified);
+  const hasKey = Boolean(data.has_custom_key);
+  const sourceLabel =
+    src === "custom"
+      ? "your key"
+      : savedMode === "custom" && savedVerified && !hasKey
+        ? "add key"
+        : savedMode === "custom"
+          ? "verify key"
+          : "app key";
+  if (!modelStr) return "LLM · …";
+  return `${modelStr} · ${sourceLabel}`;
+}
 
 export default function ConsoleWindow() {
   const [isAgentTyping, setIsAgentTyping] = useState<string | null>(null);
@@ -29,10 +54,34 @@ export default function ConsoleWindow() {
   const { projectId, messages, addMessage, applyStateSnapshot, setAgentResults, setAvailableAgents, availableAgents, nextRecommendedAgentId, setNextRecommendedAgentId, setActiveTab } = useProjectStore();
 
   const { idToken } = useAuthStore();
+  const llmRuntimeRefreshNonce = useLlmUiStore((s) => s.llmRuntimeRefreshNonce);
+  const setLlmModalOpen = useLlmUiStore((s) => s.setLlmModalOpen);
+  const llmRuntimePayload = useLlmUiStore((s) => s.llmRuntimePayload);
+  const setLlmRuntimePayload = useLlmUiStore((s) => s.setLlmRuntimePayload);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isAgentTyping]);
+
+  useEffect(() => {
+    if (!projectId || !idToken) {
+      setLlmRuntimePayload(null);
+      return;
+    }
+    let cancelled = false;
+    fetchWithAuth(`/projects/${projectId}/llm-runtime?r=${llmRuntimeRefreshNonce}`, { token: idToken })
+      .then(async (res) => {
+        const data = (await res.json()) as LlmRuntimePayload;
+        if (!res.ok) return;
+        if (!cancelled && data && typeof data === "object") setLlmRuntimePayload(data);
+      })
+      .catch(() => {
+        if (!cancelled) setLlmRuntimePayload(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, idToken, llmRuntimeRefreshNonce, setLlmRuntimePayload]);
 
   const handleSendMessage = async (text: string, agent: any, switchTab = false) => {
     const ts = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -92,6 +141,11 @@ export default function ConsoleWindow() {
         if (tab) setActiveTab(tab);
       }
 
+      const rt = data.llm_runtime as LlmRuntimePayload | undefined;
+      if (rt && typeof rt === "object") {
+        useLlmUiStore.getState().setLlmRuntimePayload(rt);
+      }
+
       // Build per-agent status sub-lines for the console
       const subLines: string[] = (data.agent_results ?? []).map((ar: any) => {
         const icon = ar.status === "success" ? "✓" : "✗";
@@ -142,11 +196,21 @@ export default function ConsoleWindow() {
   return (
     <div className="flex flex-col h-full bg-white dark:bg-black font-mono transition-colors">
 
-      <div className="h-8 border-b border-gray-300 dark:border-[#444] flex items-center justify-between px-4 bg-gray-50 dark:bg-[#050505] flex-shrink-0 transition-colors">
-        <span className="text-[10px] font-bold text-black dark:text-white tracking-widest uppercase">System_Console</span>
-        <div className="flex gap-2">
-           <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-[#555]"></div>
-           <div className="w-2 h-2 rounded-full bg-black dark:bg-white"></div>
+      <div className="h-8 border-b border-gray-300 dark:border-[#444] flex items-center justify-between gap-2 px-3 sm:px-4 bg-gray-50 dark:bg-[#050505] shrink-0 transition-colors min-w-0">
+        <span className="text-[10px] font-bold text-black dark:text-white tracking-widest uppercase shrink-0">
+          System_Console
+        </span>
+        <button
+          type="button"
+          onClick={() => setLlmModalOpen(true)}
+          className="min-w-0 flex-1 text-right text-[9px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-400 hover:text-black dark:hover:text-white underline-offset-2 hover:underline truncate"
+          title="Open LLM settings"
+        >
+          {llmRuntimePayload ? formatLlmChipLine(llmRuntimePayload) : "LLM · …"}
+        </button>
+        <div className="flex gap-2 shrink-0">
+          <div className="w-2 h-2 rounded-full bg-gray-300 dark:bg-[#555]"></div>
+          <div className="w-2 h-2 rounded-full bg-black dark:bg-white"></div>
         </div>
       </div>
 
@@ -192,7 +256,7 @@ export default function ConsoleWindow() {
         if (!agent || !agent.is_available) return null;
         const label = agent.agent_name.replace(/_/g, " ");
         return (
-          <div className="px-6 pb-2 flex-shrink-0">
+          <div className="px-6 pb-2 shrink-0">
             <button
               onClick={() => {
                 setNextRecommendedAgentId(null);

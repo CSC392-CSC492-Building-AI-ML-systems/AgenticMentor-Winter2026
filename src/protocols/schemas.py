@@ -1,7 +1,7 @@
 """Pydantic schemas for output validation."""
 from __future__ import annotations
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, EmailStr
 from enum import Enum
 from typing import Literal
@@ -134,6 +134,9 @@ class ChatResponse(BaseModel):
     agent_results: List[AgentResult] = Field(default_factory=list)
     available_agents: List[AvailableAgent] = Field(default_factory=list)
     current_phase: str = "initialization"
+    # Effective LLM for this request (after project llm_settings + env defaults). No API keys.
+    # May include booleans (e.g. has_custom_key) when using public_llm_runtime_view.
+    llm_runtime: Optional[Dict[str, Any]] = None
 
 
 class ProjectStateResponse(BaseModel):
@@ -151,6 +154,43 @@ class ProjectStateResponse(BaseModel):
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     available_agents: List[Dict[str, Any]] = Field(default_factory=list)
     export_artifacts: Dict[str, Any] = Field(default_factory=dict)
+    llm_settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMSettingsRequest(BaseModel):
+    """Request body for updating project-scoped LLM settings."""
+
+    # Required on purpose: if the client omits ``mode`` (e.g. JSON.stringify drops undefined),
+    # we must not default to "default" or we delete the in-memory custom key by mistake.
+    mode: Literal["default", "custom"]
+    model: Optional[str] = None
+    custom_api_key: Optional[str] = None
+
+
+class LLMSettingsVerifyRequest(BaseModel):
+    """Request body for verifying key/model pair."""
+    custom_api_key: str = Field(min_length=10)
+    model: str = Field(min_length=3)
+
+
+class LLMSettingsResponse(BaseModel):
+    """Sanitized LLM settings payload returned to frontend."""
+    mode: Literal["default", "custom"] = "default"
+    model: Optional[str] = None
+    has_custom_key: bool = False
+    verified: bool = False
+    verified_at: Optional[str] = None
+    allowed_default_models: List[str] = Field(default_factory=list)
+    supported_custom_models: List[str] = Field(default_factory=list)
+    # Same shape as GET /llm-runtime (enriched); lets the console update immediately after Save.
+    runtime: Optional[Dict[str, Any]] = None
+
+
+class LLMVerifyResponse(BaseModel):
+    """Verification result for custom key/model."""
+    valid: bool
+    message: str
+    runtime: Optional[Dict[str, Any]] = None
 
 
 class FirebaseUser(BaseModel):

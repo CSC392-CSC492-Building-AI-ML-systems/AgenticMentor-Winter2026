@@ -3,13 +3,12 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import mermaid from "mermaid";
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 
-mermaid.initialize({ startOnLoad: false, theme: "default", securityLevel: "loose" });
-
 let idCounter = 0;
 
 export default function MermaidDiagram({ chart }: { chart: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const isPanning = useRef(false);
@@ -17,14 +16,28 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
   const offsetStart = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
+    const root = document.documentElement;
+    const syncTheme = () => setIsDarkMode(root.classList.contains("dark"));
+    syncTheme();
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (!ref.current || !chart.trim()) return;
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: isDarkMode ? "dark" : "default",
+      securityLevel: "loose",
+    });
     const id = `mermaid-${++idCounter}`;
     mermaid.render(id, chart).then(({ svg }) => {
       if (ref.current) ref.current.innerHTML = svg;
     }).catch(() => {
       if (ref.current) ref.current.innerHTML = `<pre class="text-xs text-red-500 p-4 whitespace-pre-wrap">${chart}</pre>`;
     });
-  }, [chart]);
+  }, [chart, isDarkMode]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -32,14 +45,18 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
     setScale(s => Math.min(3, Math.max(0.2, s + delta)));
   }, []);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     isPanning.current = true;
     panStart.current = { x: e.clientX, y: e.clientY };
     offsetStart.current = { ...offset };
-    containerRef.current!.style.cursor = "grabbing";
+    if (containerRef.current) {
+      containerRef.current.style.cursor = "grabbing";
+      containerRef.current.setPointerCapture(e.pointerId);
+    }
   }, [offset]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (!isPanning.current) return;
     setOffset({
       x: offsetStart.current.x + (e.clientX - panStart.current.x),
@@ -47,9 +64,14 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
     });
   }, []);
 
-  const handleMouseUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
     isPanning.current = false;
-    if (containerRef.current) containerRef.current.style.cursor = "grab";
+    if (containerRef.current) {
+      containerRef.current.style.cursor = "grab";
+      if (containerRef.current.hasPointerCapture(e.pointerId)) {
+        containerRef.current.releasePointerCapture(e.pointerId);
+      }
+    }
   }, []);
 
   const reset = () => {
@@ -60,7 +82,7 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
   return (
     <div className="relative w-full h-full flex flex-col">
       {/* Zoom controls */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-1 bg-white dark:bg-[#111] border border-gray-200 dark:border-[#333] shadow-sm">
+      <div className="absolute top-2 right-2 sm:top-3 sm:right-3 z-10 flex items-center gap-1 bg-white dark:bg-[#111] border border-gray-200 dark:border-[#333] shadow-sm">
         <button
           onClick={() => setScale(s => Math.min(3, +(s + 0.2).toFixed(1)))}
           className="p-1.5 text-gray-500 hover:text-black dark:hover:text-white transition-colors"
@@ -91,13 +113,13 @@ export default function MermaidDiagram({ chart }: { chart: string }) {
       {/* Pannable/zoomable canvas */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-hidden select-none"
-        style={{ cursor: "grab" }}
+        className="flex-1 overflow-hidden select-none touch-none"
+        style={{ cursor: "grab", touchAction: "none" }}
         onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       >
         <div
           style={{

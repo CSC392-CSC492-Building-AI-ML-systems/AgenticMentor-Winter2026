@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserStory(BaseModel):
@@ -125,6 +125,18 @@ class ExportArtifacts(BaseModel):
     history: List[Dict[str, Union[str, List[str]]]] = Field(default_factory=list)
 
 
+class LLMSettings(BaseModel):
+    """Project-scoped runtime LLM settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    mode: str = "default"  # "default" | "custom"
+    model: Optional[str] = None
+    # Custom API key is kept only in server RAM (see llm_custom_key_store), never persisted.
+    verified: bool = False
+    verified_at: Optional[str] = None
+
+
 class ProjectState(BaseModel):
     """Single source of truth for the full project plan."""
 
@@ -147,6 +159,7 @@ class ProjectState(BaseModel):
     next_recommended_agent_id: Optional[str] = None
     last_auto_plan_agent_ids: List[str] = Field(default_factory=list)
     export_artifacts: ExportArtifacts = Field(default_factory=ExportArtifacts)
+    llm_settings: LLMSettings = Field(default_factory=LLMSettings)
 
     class Config:
         arbitrary_types_allowed = True
