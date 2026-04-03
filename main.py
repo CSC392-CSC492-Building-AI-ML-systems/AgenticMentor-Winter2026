@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -24,9 +24,12 @@ from src.protocols.schemas import (
     EmailPasswordLoginRequest,
     TokenVerificationRequest,
     TokenResponse,
+    LLMSettingsRequest,
+    LLMSettingsResponse,
+    LLMSettingsVerifyRequest,
+    LLMVerifyResponse,
 )
 from src.utils.config import settings
-from src.storage.memory_store import default_memory_adapter
 from src.state.state_manager import StateManager
 from src.orchestrator.master_agent import MasterOrchestrator
 from src.state.project_state import ProjectState as OrchestratorState
@@ -36,18 +39,23 @@ from src.auth.firebase_auth import (
     login_with_email_password,
     verify_id_token_payload,
 )
+from src.services.llm_custom_key_store import (
+    delete_all_for_user,
+    delete_custom_key,
+    get_custom_key,
+    set_custom_key,
+)
+from src.services.llm_settings_service import (
+    normalize_gemini_model_id,
+    now_iso,
+    public_llm_runtime_view,
+    sanitize_llm_settings,
+    verify_gemini_key_model,
+)
 
-# Module-level singletons initialised in lifespan
-state_manager: StateManager | None = None
-orchestrator: MasterOrchestrator | None = None
-from src.utils.config import settings
-
-# Import the StateManager and MasterOrchestrator for Phase 4
 from src.state.persistence import get_default_adapter
-from src.state.state_manager import StateManager
-from src.orchestrator.master_agent import MasterOrchestrator
 
-# Initialize the adapter, state manager, and orchestrator in the correct order
+# Module-level singletons (initialised once at startup)
 db_adapter = get_default_adapter()
 state_manager = StateManager(db_adapter)
 orchestrator = MasterOrchestrator(state_manager)
@@ -56,10 +64,7 @@ orchestrator = MasterOrchestrator(state_manager)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
-    global state_manager, orchestrator
     print(f"Starting AgenticMentor API on {settings.api_host}:{settings.api_port}")
-    state_manager = StateManager(default_memory_adapter)
-    orchestrator = MasterOrchestrator(state_manager)
     yield
     print("Shutting down AgenticMentor API")
 
@@ -91,9 +96,16 @@ def _get_orchestrator() -> MasterOrchestrator:
 
 
 def _get_state_manager() -> StateManager:
-    if state_manager is None:
-        raise HTTPException(status_code=503, detail="State manager not ready")
     return state_manager
+
+
+async def _assert_project_owner(project_id: str, current_user: FirebaseUser) -> None:
+    """Ensure the requested project belongs to the current user."""
+    raw = await _get_state_manager().db.get(project_id)
+    if not raw:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if (raw.get("owner_uid") or "") != (current_user.uid or ""):
+        raise HTTPException(status_code=404, detail="Project not found")
 
 
 def _requirements_to_schema(req_dict: dict) -> RequirementsState:
@@ -137,6 +149,12 @@ def _orch_state_to_full_response(
         mockups=mockups,
         conversation_history=history,
         available_agents=available_agents or [],
+        export_artifacts=orch_state.export_artifacts.model_dump() if orch_state.export_artifacts else {},
+        llm_settings=sanitize_llm_settings(
+            getattr(orch_state, "llm_settings", None),
+            owner_uid=getattr(orch_state, "owner_uid", None),
+            project_id=project_id,
+        ),
     )
 
 
@@ -185,6 +203,17 @@ async def auth_login_email(request: EmailPasswordLoginRequest) -> TokenResponse:
 async def auth_verify_token(request: TokenVerificationRequest) -> FirebaseUser:
     return await verify_id_token_payload(request.id_token)
 
+@app.get("/auth/me", response_model=FirebaseUser)
+async def auth_me(current_user: FirebaseUser = Depends(get_current_user)) -> FirebaseUser:
+    """Debug helper: return the currently authenticated Firebase user."""
+    return current_user
+
+
+@app.post("/auth/clear-llm-keys", status_code=204)
+async def auth_clear_llm_keys(current_user: FirebaseUser = Depends(get_current_user)) -> None:
+    """Drop all in-memory Gemini keys for this user (call before logout)."""
+    delete_all_for_user(current_user.uid or "")
+
 
 # ---------------------------------------------------------------------------
 # Projects
@@ -195,14 +224,22 @@ async def list_projects(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """List all project IDs with basic metadata."""
-    session_ids = await default_memory_adapter.list_sessions()
+    sm = _get_state_manager()
+    session_ids = await sm.db.list_sessions(owner_uid=current_user.uid)
     result = []
     for sid in session_ids:
-        raw = await default_memory_adapter.get(sid)
+        raw = await sm.db.get(sid)
         if raw:
+            reqs = raw.get("requirements") or {}
+            display_name = (
+                reqs.get("app_name")
+                or reqs.get("project_type")
+                or raw.get("project_name")
+                or sid
+            )
             result.append({
                 "project_id": sid,
-                "project_name": raw.get("project_name") or sid,
+                "project_name": display_name,
                 "current_phase": raw.get("current_phase", "initialization"),
                 "created_at": raw.get("created_at"),
             })
@@ -215,15 +252,15 @@ async def create_project(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Create a new project and return its full initial state."""
-    sm = _get_state_manager()
     orch = _get_orchestrator()
 
     project_id = str(uuid.uuid4())
     initial_state = OrchestratorState(
         session_id=project_id,
+        owner_uid=current_user.uid,
         project_name=project.name,
     )
-    await default_memory_adapter.save(project_id, initial_state.model_dump())
+    await _get_state_manager().db.save(project_id, initial_state.model_dump())
 
     available_agents = orch._get_available_agents(initial_state)
     return _orch_state_to_full_response(project_id, initial_state, available_agents)
@@ -235,10 +272,10 @@ async def get_project(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Get full project state by ID."""
-    sm = _get_state_manager()
     orch = _get_orchestrator()
+    await _assert_project_owner(project_id, current_user)
 
-    orch_state = await sm.load(project_id)
+    orch_state = await _get_state_manager().load(project_id)
     if orch_state is None or orch_state.session_id != project_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -253,13 +290,9 @@ async def chat(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Send a message to the orchestrator and get a multi-agent response."""
-    sm = _get_state_manager()
     orch = _get_orchestrator()
 
-    # Verify project exists
-    existing = await default_memory_adapter.get(project_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Project not found")
+    await _assert_project_owner(project_id, current_user)
 
     try:
         result = await orch.process_request(
@@ -267,12 +300,21 @@ async def chat(
             session_id=project_id,
             agent_selection_mode=request.agent_selection_mode,
             selected_agent_id=request.selected_agent_id,
+            owner_uid=current_user.uid,
         )
     except Exception as e:
         print(f"[chat] Orchestrator error: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Orchestrator error: {str(e)}") from e
 
+    orch_state_after = await _get_state_manager().load(project_id)
+    llm_rt = public_llm_runtime_view(orch_state_after, owner_uid=current_user.uid)
+
     state_snapshot = result.get("state_snapshot") or {}
+    # Never expose raw custom API key to frontend.
+    if isinstance(state_snapshot, dict) and "llm_settings" in state_snapshot:
+        llm_settings = state_snapshot.get("llm_settings")
+        if isinstance(llm_settings, dict):
+            llm_settings.pop("custom_api_key", None)
     raw_agent_results = result.get("agent_results") or []
     raw_available_agents = result.get("available_agents") or []
 
@@ -286,7 +328,176 @@ async def chat(
         agent_results=agent_results,
         available_agents=available_agents,
         current_phase=state_snapshot.get("current_phase", "initialization"),
+        llm_runtime=llm_rt,
     )
+
+
+@app.get("/projects/{project_id}/llm-runtime")
+async def get_llm_runtime_ephemeral(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+) -> dict:
+    """Effective model/key source for this project (no secrets). For console UI."""
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return public_llm_runtime_view(orch_state, owner_uid=current_user.uid)
+
+
+@app.get("/projects/{project_id}/llm-settings", response_model=LLMSettingsResponse)
+async def get_llm_settings(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return LLMSettingsResponse(
+        **sanitize_llm_settings(
+            getattr(orch_state, "llm_settings", None),
+            owner_uid=current_user.uid,
+            project_id=project_id,
+        )
+    )
+
+
+@app.post("/projects/{project_id}/llm-settings", response_model=LLMSettingsResponse)
+async def set_llm_settings(
+    project_id: str,
+    request: LLMSettingsRequest,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    uid = current_user.uid or ""
+    raw_model_req = (request.model or "").strip() or "gemini-2.5-flash"
+    resolved_model = normalize_gemini_model_id(raw_model_req) or raw_model_req
+
+    # Backfill owner_uid on older rows so key lookup via project_state stays consistent.
+    owner_patch: dict = {}
+    if uid and not (getattr(orch_state, "owner_uid", None) or "").strip():
+        owner_patch["owner_uid"] = uid
+
+    if request.mode == "default":
+        delete_custom_key(uid, project_id)
+        delta = {
+            **owner_patch,
+            "llm_settings": {
+                "mode": "default",
+                "model": resolved_model,
+                "verified": False,
+                "verified_at": None,
+            },
+        }
+    else:
+        new_key = (request.custom_api_key or "").strip() if request.custom_api_key is not None else ""
+        mem_before = (get_custom_key(uid, project_id) or "").strip()
+        if new_key:
+            set_custom_key(uid, project_id, new_key)
+            # Same key as already in memory (e.g. client resends after Verify). Do not wipe DB flags.
+            if mem_before and new_key == mem_before:
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                    },
+                }
+            else:
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                        "verified": False,
+                        "verified_at": None,
+                    },
+                }
+        else:
+            mem = get_custom_key(uid, project_id)
+            if mem:
+                # Do not send verified/verified_at: merge keeps existing flags. Avoids wiping
+                # verification after "Verify" when user hits Save without re-pasting the key
+                # (race or stale read could set verified=False while key is already in memory).
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                    },
+                }
+            else:
+                delta = {
+                    **owner_patch,
+                    "llm_settings": {
+                        "mode": "custom",
+                        "model": resolved_model,
+                        "verified": False,
+                        "verified_at": None,
+                    },
+                }
+
+    updated = await _get_state_manager().update(project_id, delta)
+    return LLMSettingsResponse(
+        **sanitize_llm_settings(
+            getattr(updated, "llm_settings", None),
+            owner_uid=uid,
+            project_id=project_id,
+        )
+    )
+
+
+@app.post("/projects/{project_id}/llm-settings/verify", response_model=LLMVerifyResponse)
+async def verify_llm_settings(
+    project_id: str,
+    request: LLMSettingsVerifyRequest,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
+    if orch_state is None or orch_state.session_id != project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    valid, message = await verify_gemini_key_model(request.custom_api_key, request.model)
+    runtime = None
+    if valid:
+        uid = current_user.uid or ""
+        set_custom_key(uid, project_id, (request.custom_api_key or "").strip())
+        owner_patch: dict = {}
+        if uid and not (getattr(orch_state, "owner_uid", None) or "").strip():
+            owner_patch["owner_uid"] = uid
+        raw_model = (request.model or "").strip()
+        resolved_model = normalize_gemini_model_id(raw_model) or raw_model
+        updated = await _get_state_manager().update(
+            project_id,
+            {
+                **owner_patch,
+                "llm_settings": {
+                    "mode": "custom",
+                    "model": resolved_model,
+                    "verified": True,
+                    "verified_at": now_iso(),
+                },
+            },
+        )
+        runtime = public_llm_runtime_view(updated, owner_uid=uid)
+    return LLMVerifyResponse(valid=valid, message=message, runtime=runtime)
+
+
+@app.delete("/projects/{project_id}", status_code=204)
+async def delete_project(
+    project_id: str,
+    current_user: FirebaseUser = Depends(get_current_user),
+):
+    """Delete a project and all its data."""
+    await _assert_project_owner(project_id, current_user)
+    delete_custom_key(current_user.uid or "", project_id)
+    await _get_state_manager().db.delete(project_id)
 
 
 @app.get("/projects/{project_id}/requirements", response_model=RequirementsState)
@@ -295,8 +506,8 @@ async def get_requirements(
     current_user: FirebaseUser = Depends(get_current_user),
 ):
     """Get current requirements state for a project."""
-    sm = _get_state_manager()
-    orch_state = await sm.load(project_id)
+    await _assert_project_owner(project_id, current_user)
+    orch_state = await _get_state_manager().load(project_id)
     if orch_state is None or orch_state.session_id != project_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -307,8 +518,9 @@ async def get_requirements(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app", 
-        host=settings.api_host, 
-        port=settings.api_port, 
-        reload=settings.api_debug
+        "main:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.api_debug,
+        reload_excludes=["venv/*", ".venv/*", "*.pyc", "__pycache__/*"],
     )

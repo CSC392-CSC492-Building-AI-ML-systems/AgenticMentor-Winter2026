@@ -37,6 +37,9 @@ ENV/
 .env
 .env.local
 
+# Local service account / API credential files (never commit)
+credentials/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -109,3 +112,12 @@ frontend/.vercel
 # Excalidraw
 outputs/
 outputs/mockups/
+
+# Claude Code
+.claude/
+
+# venv
+testGround/
+
+# Puppeteer browser binaries (set PUPPETEER_CACHE_DIR=$PWD/.puppeteer-browser on Render build; do not commit)
+.puppeteer-browser/
